@@ -30,6 +30,10 @@ public:
 
   std::unordered_map<size_t, std::vector<Eigen::VectorXf>> uvs_norm;
 
+  std::unordered_map<size_t, std::vector<Eigen::Vector2f>> pal_normals;
+
+  std::unordered_map<size_t, std::vector<float>> pal_weights;
+
   std::unordered_map<size_t, std::vector<double>> timestamps;
 
   std::unordered_map<size_t, std::vector<std::shared_ptr<frame>>> frames;
@@ -65,7 +69,8 @@ public:
 
   std::shared_ptr<feature> getFeature(size_t id, bool remove = false);
 
-  void updateFeature(std::shared_ptr<frame> fh, size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n);
+  void updateFeature(std::shared_ptr<frame> fh, size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n, 
+    const Eigen::Vector2f &pal_normal, float pal_weight);
 
   std::vector<std::shared_ptr<feature>> getOldFeatures(double timestamp, bool remove = false, bool skip_deleted = false);
 

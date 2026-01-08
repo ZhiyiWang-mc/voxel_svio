@@ -30,6 +30,10 @@ public:
 
 		std::unordered_map<size_t, std::vector<Eigen::VectorXf>> uvs_norm;
 
+		std::unordered_map<size_t, std::vector<Eigen::Vector2f>> pal_normals;
+
+		std::unordered_map<size_t, std::vector<float>> pal_weights;
+
 		std::unordered_map<size_t, std::vector<double>> timestamps;
 
 		std::unordered_map<size_t, std::vector<std::shared_ptr<frame>>> frames;

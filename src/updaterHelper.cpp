@@ -14,9 +14,20 @@ void updaterHelper::getFeatureJacobianFull(std::shared_ptr<state> state_ptr, upd
 	Eigen::MatrixXd &H_x, Eigen::VectorXd &res, std::vector<std::shared_ptr<baseType>> &x_order)
 {
 	int total_meas = 0;
+	int total_line_meas = 0;
 	for (auto const &pair : feature.timestamps)
 	{
 		total_meas += (int)pair.second.size();
+		if (state_ptr->options.use_pal && state_ptr->options.pal_weight_scale > 0.0 && state_ptr->options.pal_max_weight > 0.0
+			&& feature.pal_weights.find(pair.first) != feature.pal_weights.end()
+			&& feature.pal_normals.find(pair.first) != feature.pal_normals.end())
+		{
+			for (size_t m = 0; m < feature.pal_weights[pair.first].size(); m++)
+			{
+				if (feature.pal_weights[pair.first].at(m) > 0.0f && feature.pal_normals[pair.first].at(m).norm() > 1e-6f)
+					total_line_meas++;
+			}
+		}
 	}
 
 	int total_hx = 0;
@@ -57,11 +68,14 @@ void updaterHelper::getFeatureJacobianFull(std::shared_ptr<state> state_ptr, upd
 	Eigen::Vector3d p_FinG_fej = feature.position_global_fej;
 
 	int c = 0;
+	int cline = 0;
 	int jacobsize = 3;
+	const int line_row_start = 2 * total_meas;
+	const int total_rows = 2 * total_meas + total_line_meas;
 
-	res = Eigen::VectorXd::Zero(2 * total_meas);
-	H_f = Eigen::MatrixXd::Zero(2 * total_meas, jacobsize);
-	H_x = Eigen::MatrixXd::Zero(2 * total_meas, total_hx);
+	res = Eigen::VectorXd::Zero(total_rows);
+	H_f = Eigen::MatrixXd::Zero(total_rows, jacobsize);
+	H_x = Eigen::MatrixXd::Zero(total_rows, total_hx);
 
 	Eigen::MatrixXd dpfg_dlambda;
 	std::vector<Eigen::MatrixXd> dpfg_dx;
@@ -150,6 +164,64 @@ void updaterHelper::getFeatureJacobianFull(std::shared_ptr<state> state_ptr, upd
 				res.block(2 * c, 0, 2, 1) *= hw;
 				H_x.block(2 * c, 0, 2, H_x.cols()) *= hw;
 				H_f.block(2 * c, 0, 2, H_f.cols()) *= hw;
+			}
+
+			if (state_ptr->options.use_pal && state_ptr->options.pal_weight_scale > 0.0 && state_ptr->options.pal_max_weight > 0.0 
+				&& feature.pal_weights.find(pair.first) != feature.pal_weights.end() 
+				&& feature.pal_normals.find(pair.first) != feature.pal_normals.end())
+			{
+				float pal_weight = feature.pal_weights[pair.first].at(m);
+				if (pal_weight > 0.0f)
+				{
+					Eigen::Vector2f pal_normal = feature.pal_normals[pair.first].at(m);
+					const float n_norm = pal_normal.norm();
+					if (n_norm > 1e-6f)
+					{
+						const int row = line_row_start + cline;
+						const double pal_scale = std::min(state_ptr->options.pal_max_weight, 
+							state_ptr->options.pal_weight_scale * std::max(0.0, (double)pal_weight));
+						Eigen::Matrix<double, 1, 2> n_t;
+						n_t << pal_normal(0) / n_norm, pal_normal(1) / n_norm;
+
+						res(row) = pal_scale * (n_t * (uv_m - uv_dist))(0, 0);
+						H_f.block(row, 0, 1, H_f.cols()).noalias() = pal_scale * (n_t * dz_dpfg * dpfg_dlambda);
+						H_x.block(row, map_hx[clone_Ii], 1, clone_Ii->getSize()).noalias() = pal_scale * (n_t * dz_dpfc * dpfc_dclone);
+
+						for (size_t i = 0; i < dpfg_dx_order.size(); i++)
+						{
+							H_x.block(row, map_hx[dpfg_dx_order.at(i)], 1, dpfg_dx_order.at(i)->getSize()).noalias() += 
+								pal_scale * (n_t * dz_dpfg * dpfg_dx.at(i));
+						}
+
+						if (state_ptr->options.do_calib_camera_pose)
+						{
+							Eigen::MatrixXd dpfc_dcalib = Eigen::MatrixXd::Zero(3, 6);
+							dpfc_dcalib.block(0, 0, 3, 3) = quatType::skewSymmetric(p_FinCi - p_IinC);
+							dpfc_dcalib.block(0, 3, 3, 3) = Eigen::Matrix<double, 3, 3>::Identity();
+
+							H_x.block(row, map_hx[calibration], 1, calibration->getSize()).noalias() += pal_scale * (n_t * dz_dpfc * dpfc_dcalib);
+						}
+
+						if (state_ptr->options.do_calib_camera_intrinsics)
+						{
+							H_x.block(row, map_hx[distortion], 1, distortion->getSize()) += pal_scale * (n_t * dz_dzeta);
+						}
+
+						if (state_ptr->options.use_huber)
+						{
+							double loss = std::abs(res(row));
+							double hw = loss < setting_huber_th ? 1 : setting_huber_th / loss;
+
+							if (hw < 1) hw = sqrt(hw);
+
+							res(row) *= hw;
+							H_x.block(row, 0, 1, H_x.cols()) *= hw;
+							H_f.block(row, 0, 1, H_f.cols()) *= hw;
+						}
+
+						cline++;
+					}
+				}
 			}
 
 			c++;

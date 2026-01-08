@@ -337,6 +337,15 @@ void voxelStereoVio::readParameters()
 
     nh.param<bool>("odometry_parameter/use_huber", para_bool, true); odometry_options.state_options.use_huber = para_bool;
     nh.param<bool>("odometry_parameter/use_keyframe", para_bool, true); odometry_options.use_keyframe = para_bool;
+    nh.param<bool>("odometry_parameter/use_pal", para_bool, false); odometry_options.use_pal = para_bool;
+    nh.param<int>("odometry_parameter/pal_patch_radius", para_int, 4); odometry_options.pal_patch_radius = para_int;
+    nh.param<double>("odometry_parameter/pal_min_grad", para_double, 8.0); odometry_options.pal_min_grad = para_double;
+    nh.param<double>("odometry_parameter/pal_min_anisotropy", para_double, 0.35); odometry_options.pal_min_anisotropy = para_double;
+    nh.param<double>("odometry_parameter/pal_weight_scale", para_double, 1.0); odometry_options.pal_weight_scale = para_double;
+    nh.param<double>("odometry_parameter/pal_max_weight", para_double, 3.0); odometry_options.pal_max_weight = para_double;
+    odometry_options.state_options.use_pal = odometry_options.use_pal;
+    odometry_options.state_options.pal_weight_scale = odometry_options.pal_weight_scale;
+    odometry_options.state_options.pal_max_weight = odometry_options.pal_max_weight;
 
     nh.param<bool>("feature_parameter/refine_features", para_bool, true); odometry_options.featinit_options.refine_features = para_bool;
     nh.param<int>("feature_parameter/max_runs", para_int, 5); odometry_options.featinit_options.max_runs = para_int;
@@ -394,7 +403,9 @@ void voxelStereoVio::allocateMemory()
     int init_max_features = std::floor((double)odometry_options.init_options.init_max_features / (double)2.0);
 
     featureTracker = std::shared_ptr<trackKLT>(new trackKLT(state_ptr->cam_intrinsics_cameras, init_max_features, odometry_options.histogram_method, 
-        odometry_options.fast_threshold, odometry_options.patch_size_x, odometry_options.patch_size_y, odometry_options.min_px_dist));
+        odometry_options.fast_threshold, odometry_options.patch_size_x, odometry_options.patch_size_y, odometry_options.min_px_dist, 
+        odometry_options.use_pal, odometry_options.pal_patch_radius, odometry_options.pal_min_grad, odometry_options.pal_min_anisotropy, 
+        odometry_options.pal_weight_scale, odometry_options.pal_max_weight));
 
     propagator_ptr = std::make_shared<propagator>(odometry_options.imu_noises, odometry_options.gravity_mag);
 

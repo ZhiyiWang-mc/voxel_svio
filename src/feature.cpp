@@ -7,10 +7,14 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		assert(timestamps[pair.first].size() == pal_normals[pair.first].size());
+		assert(timestamps[pair.first].size() == pal_weights[pair.first].size());
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
+		auto it3b = pal_normals[pair.first].begin();
+		auto it3c = pal_weights[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
 
@@ -21,6 +25,8 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 				it1 = timestamps[pair.first].erase(it1);
 				it2 = uvs[pair.first].erase(it2);
 				it3 = uvs_norm[pair.first].erase(it3);
+				it3b = pal_normals[pair.first].erase(it3b);
+				it3c = pal_weights[pair.first].erase(it3c);
 
 				assert((*it4)->v_feat_ptr.at(pair.first).find(feature_id) != (*it4)->v_feat_ptr.at(pair.first).end());
 
@@ -37,6 +43,8 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 				it1++;
 				it2++;
 				it3++;
+				it3b++;
+				it3c++;
 				it4++;
 				it5++;
 			}
@@ -50,10 +58,14 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		assert(timestamps[pair.first].size() == pal_normals[pair.first].size());
+		assert(timestamps[pair.first].size() == pal_weights[pair.first].size());
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
+		auto it3b = pal_normals[pair.first].begin();
+		auto it3c = pal_weights[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
 
@@ -64,6 +76,8 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 				it1 = timestamps[pair.first].erase(it1);
 				it2 = uvs[pair.first].erase(it2);
 				it3 = uvs_norm[pair.first].erase(it3);
+				it3b = pal_normals[pair.first].erase(it3b);
+				it3c = pal_weights[pair.first].erase(it3c);
 
 				assert((*it4)->v_feat_ptr.at(pair.first).find(feature_id) != (*it4)->v_feat_ptr.at(pair.first).end());
 
@@ -81,6 +95,8 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 				it1++;
 				it2++;
 				it3++;
+				it3b++;
+				it3c++;
 				it4++;
 				it5++;
 			}
@@ -94,10 +110,14 @@ void feature::cleanOlderMeasurements(double timestamp)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		assert(timestamps[pair.first].size() == pal_normals[pair.first].size());
+		assert(timestamps[pair.first].size() == pal_weights[pair.first].size());
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
+		auto it3b = pal_normals[pair.first].begin();
+		auto it3c = pal_weights[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
 
@@ -108,6 +128,8 @@ void feature::cleanOlderMeasurements(double timestamp)
 				it1 = timestamps[pair.first].erase(it1);
 				it2 = uvs[pair.first].erase(it2);
 				it3 = uvs_norm[pair.first].erase(it3);
+				it3b = pal_normals[pair.first].erase(it3b);
+				it3c = pal_weights[pair.first].erase(it3c);
 
 				assert((*it4)->v_feat_ptr.at(pair.first).find(feature_id) != (*it4)->v_feat_ptr.at(pair.first).end());
 
@@ -124,6 +146,8 @@ void feature::cleanOlderMeasurements(double timestamp)
 				it1++;
 				it2++;
 				it3++;
+				it3b++;
+				it3c++;
 				it4++;
 				it5++;
 			}
@@ -164,7 +188,8 @@ std::shared_ptr<feature> featureDatabase::getFeature(size_t id, bool remove)
 	}
 }
 
-void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n)
+void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n, 
+	const Eigen::Vector2f &pal_normal, float pal_weight)
 {
 	if (features_id_lookup.find(id) != features_id_lookup.end())
 	{
@@ -174,6 +199,8 @@ void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double
 		{
 			feat->uvs[cam_id].push_back(Eigen::Vector2f(u, v));
 			feat->uvs_norm[cam_id].push_back(Eigen::Vector2f(u_n, v_n));
+			feat->pal_normals[cam_id].push_back(pal_normal);
+			feat->pal_weights[cam_id].push_back(pal_weight);
 			feat->timestamps[cam_id].push_back(timestamp);
 			feat->frames[cam_id].push_back(fh);
 
@@ -198,6 +225,8 @@ void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double
 		feat->feature_id = id;
 		feat->uvs[cam_id].push_back(Eigen::Vector2f(u, v));
 		feat->uvs_norm[cam_id].push_back(Eigen::Vector2f(u_n, v_n));
+		feat->pal_normals[cam_id].push_back(pal_normal);
+		feat->pal_weights[cam_id].push_back(pal_weight);
 		feat->timestamps[cam_id].push_back(timestamp);
 		feat->frames[cam_id].push_back(fh);
 

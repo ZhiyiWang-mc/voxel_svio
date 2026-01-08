@@ -1,17 +1,101 @@
 #include "featureTracker.h"
+#include <cmath>
 #include "camera.h"
 #include "feature.h"
 #include "featureHelper.h"
 #include "state.h"
 
 trackKLT::trackKLT(std::unordered_map<size_t, std::shared_ptr<cameraBase>> camera_calib_, int num_features_, 
-  HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_) 
+  HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_, bool use_pal_, 
+  int pal_patch_radius_, double pal_min_grad_, double pal_min_anisotropy_, double pal_weight_scale_, double pal_max_weight_) 
   : camera_calib(camera_calib_), database(new featureDatabase()), num_features(num_features_), histogram_method(histogram_method_), 
-  threshold(fast_threshold_), patch_size_x(patch_size_x_), patch_size_y(patch_size_y_), min_px_dist(min_px_dist_)
+  threshold(fast_threshold_), patch_size_x(patch_size_x_), patch_size_y(patch_size_y_), min_px_dist(min_px_dist_), use_pal(use_pal_), 
+  pal_patch_radius(pal_patch_radius_), pal_min_grad(static_cast<float>(pal_min_grad_)), 
+  pal_min_anisotropy(static_cast<float>(pal_min_anisotropy_)), pal_weight_scale(static_cast<float>(pal_weight_scale_)), 
+  pal_max_weight(static_cast<float>(pal_max_weight_))
 {
   current_id = 1;
 
   pixelSelector_ptr = std::make_shared<pixelSelector>(wG[0], hG[0]);
+}
+
+void trackKLT::computePalObservation(const std::shared_ptr<frame> &fh, size_t cam_id, const cv::Point2f &pt, 
+  Eigen::Vector2f &normal, float &weight)
+{
+  normal = Eigen::Vector2f::Zero();
+  weight = 0.0f;
+
+  if (!use_pal || fh == nullptr)
+    return;
+
+  const int w = wG[0];
+  const int h = hG[0];
+  const int radius = pal_patch_radius;
+
+  const int x = (int)std::lround(pt.x);
+  const int y = (int)std::lround(pt.y);
+
+  if (x < radius || y < radius || x >= w - radius || y >= h - radius)
+    return;
+
+  const Eigen::Vector3f *dI = (cam_id == 0) ? fh->dI_left : fh->dI_right;
+  if (dI == nullptr)
+    return;
+
+  float a = 0.0f;
+  float b = 0.0f;
+  float c = 0.0f;
+  const float min_grad_sq = pal_min_grad * pal_min_grad;
+
+  for (int dy = -radius; dy <= radius; dy++)
+  {
+    int row = (y + dy) * w;
+    for (int dx = -radius; dx <= radius; dx++)
+    {
+      const Eigen::Vector3f &pix = dI[row + (x + dx)];
+      const float gx = pix[1];
+      const float gy = pix[2];
+      const float g2 = gx * gx + gy * gy;
+      if (g2 < min_grad_sq)
+        continue;
+
+      a += gx * gx;
+      b += gx * gy;
+      c += gy * gy;
+    }
+  }
+
+  const float trace = a + c;
+  if (trace < 1e-6f)
+    return;
+
+  const float diff = a - c;
+  const float root = std::sqrt(diff * diff + 4.0f * b * b);
+  const float lambda1 = 0.5f * (trace + root);
+  const float lambda2 = 0.5f * (trace - root);
+  const float anisotropy = (lambda1 - lambda2) / (trace + 1e-6f);
+
+  if (anisotropy < pal_min_anisotropy)
+    return;
+
+  Eigen::Vector2f n;
+  if (std::abs(b) > 1e-6f)
+  {
+    n << (lambda1 - c), b;
+  }
+  else
+  {
+    n = (a >= c) ? Eigen::Vector2f(1.0f, 0.0f) : Eigen::Vector2f(0.0f, 1.0f);
+  }
+
+  const float n_norm = n.norm();
+  if (n_norm < 1e-6f)
+    return;
+
+  normal = n / n_norm;
+
+  const float scaled = pal_weight_scale * std::max(0.0f, anisotropy);
+  weight = std::min(pal_max_weight, scaled);
 }
 
 std::shared_ptr<featureDatabase> trackKLT::getFeatureDatabase()
@@ -220,12 +304,20 @@ void trackKLT::feedStereo(const cameraData &image_measurements, std::shared_ptr<
   for (size_t i = 0; i < good_left.size(); i++)
   {
     cv::Point2f npt_l = camera_calib.at(cam_id_left)->undistortCV(good_left.at(i).pt);
-    database->updateFeature(fh, good_ids_left.at(i), image_measurements.timestamp, cam_id_left, good_left.at(i).pt.x, good_left.at(i).pt.y, npt_l.x, npt_l.y);
+    Eigen::Vector2f pal_normal;
+    float pal_weight = 0.0f;
+    computePalObservation(fh, cam_id_left, good_left.at(i).pt, pal_normal, pal_weight);
+    database->updateFeature(fh, good_ids_left.at(i), image_measurements.timestamp, cam_id_left, good_left.at(i).pt.x, good_left.at(i).pt.y, 
+      npt_l.x, npt_l.y, pal_normal, pal_weight);
   }
   for (size_t i = 0; i < good_right.size(); i++)
   {
     cv::Point2f npt_r = camera_calib.at(cam_id_right)->undistortCV(good_right.at(i).pt);
-    database->updateFeature(fh, good_ids_right.at(i), image_measurements.timestamp, cam_id_right, good_right.at(i).pt.x, good_right.at(i).pt.y, npt_r.x, npt_r.y);
+    Eigen::Vector2f pal_normal;
+    float pal_weight = 0.0f;
+    computePalObservation(fh, cam_id_right, good_right.at(i).pt, pal_normal, pal_weight);
+    database->updateFeature(fh, good_ids_right.at(i), image_measurements.timestamp, cam_id_right, good_right.at(i).pt.x, good_right.at(i).pt.y, 
+      npt_r.x, npt_r.y, pal_normal, pal_weight);
   }
 
   {

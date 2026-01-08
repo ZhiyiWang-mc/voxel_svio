@@ -45,6 +45,12 @@ public:
 
     bool use_huber = true;
 
+    bool use_pal = false;
+
+    double pal_weight_scale = 1.0;
+
+    double pal_max_weight = 3.0;
+
     void recordParameters();
 };
 
@@ -243,6 +249,18 @@ public:
     bool use_all_points = false;
 
     bool use_keyframe = true;
+
+    bool use_pal = false;
+
+    int pal_patch_radius = 4;
+
+    double pal_min_grad = 8.0;
+
+    double pal_min_anisotropy = 0.35;
+
+    double pal_weight_scale = 1.0;
+
+    double pal_max_weight = 3.0;
 
     void recordParameters();
 };

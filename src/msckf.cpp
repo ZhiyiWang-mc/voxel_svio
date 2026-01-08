@@ -756,6 +756,8 @@ void updaterMsckf::update(std::shared_ptr<state> state_ptr, std::vector<std::sha
 		feat.feature_id = (*it2)->feature_id;
 		feat.uvs = (*it2)->uvs;
 		feat.uvs_norm = (*it2)->uvs_norm;
+		feat.pal_normals = (*it2)->pal_normals;
+		feat.pal_weights = (*it2)->pal_weights;
 		feat.timestamps = (*it2)->timestamps;
 		feat.frames = (*it2)->frames;
 		feat.color = (*it2)->color;
@@ -962,6 +964,8 @@ void updaterSlam::delayedInit(std::shared_ptr<state> state_ptr, voxelHashMap &vo
 		feat.feature_id = (*it2)->feature_id;
 		feat.uvs = (*it2)->uvs;
 		feat.uvs_norm = (*it2)->uvs_norm;
+		feat.pal_normals = (*it2)->pal_normals;
+		feat.pal_weights = (*it2)->pal_weights;
 		feat.timestamps = (*it2)->timestamps;
 
 		feat.frames = (*it2)->frames;
@@ -1113,6 +1117,8 @@ void updaterSlam::update(std::shared_ptr<state> state_ptr, voxelHashMap &voxel_m
 		feat.feature_id = (*it2)->feature_id;
 		feat.uvs = (*it2)->uvs;
 		feat.uvs_norm = (*it2)->uvs_norm;
+		feat.pal_normals = (*it2)->pal_normals;
+		feat.pal_weights = (*it2)->pal_weights;
 		feat.timestamps = (*it2)->timestamps;
 		feat.frames = (*it2)->frames;
 		feat.color = (*it2)->color;

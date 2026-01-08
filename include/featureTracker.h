@@ -28,7 +28,8 @@ class trackKLT
 public:
 
 	trackKLT(std::unordered_map<size_t, std::shared_ptr<cameraBase>> camera_calib_, int num_features_, 
-		HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_);
+		HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_, bool use_pal_, 
+		int pal_patch_radius_, double pal_min_grad_, double pal_min_anisotropy_, double pal_weight_scale_, double pal_max_weight_);
 
 	void feedNewImage(const cameraData &image_measurements, std::shared_ptr<frame> fh);
 
@@ -43,6 +44,8 @@ public:
 	void displayActive(cv::Mat &img_out, int r1, int g1, int b1, int r2, int g2, int b2, std::string overlay = "");
 
 private:
+	void computePalObservation(const std::shared_ptr<frame> &fh, size_t cam_id, const cv::Point2f &pt, Eigen::Vector2f &normal, float &weight);
+
 	void feedStereo(const cameraData &image_measurements, std::shared_ptr<frame> fh, size_t image_id_left, size_t image_id_right);
 
 	void performDetectionStereo(std::shared_ptr<frame> fh, const std::vector<cv::Mat> &img_0_pyr, const std::vector<cv::Mat> &img_1_pyr, const cv::Mat &mask_0, const cv::Mat &mask_1, 
@@ -76,6 +79,13 @@ private:
 	int patch_size_y;
 
 	int min_px_dist;
+
+	bool use_pal;
+	int pal_patch_radius;
+	float pal_min_grad;
+	float pal_min_anisotropy;
+	float pal_weight_scale;
+	float pal_max_weight;
 
 	int pyr_levels = 5;
 	cv::Size win_size = cv::Size(15, 15);
