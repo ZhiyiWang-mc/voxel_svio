@@ -272,5 +272,9 @@ public:
 
     double score_recency_tau = 1.0;
 
+    double pal_msckf_keep_ratio = 0.3;
+
+    double pal_msckf_min_score = 0.2;
+
     void recordParameters();
 };

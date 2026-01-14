@@ -372,6 +372,8 @@ void voxelStereoVio::readParameters()
     nh.param<double>("voxel_parameter/score_w_pal", para_double, 0.8); odometry_options.score_w_pal = para_double;
     nh.param<double>("voxel_parameter/score_w_recency", para_double, 0.3); odometry_options.score_w_recency = para_double;
     nh.param<double>("voxel_parameter/score_recency_tau", para_double, 1.0); odometry_options.score_recency_tau = para_double;
+    nh.param<double>("voxel_parameter/pal_msckf_keep_ratio", para_double, 0.3); odometry_options.pal_msckf_keep_ratio = para_double;
+    nh.param<double>("voxel_parameter/pal_msckf_min_score", para_double, 0.2); odometry_options.pal_msckf_min_score = para_double;
 }
 
 void voxelStereoVio::allocateMemory()
@@ -1193,6 +1195,41 @@ void voxelStereoVio::featureUpdate(cameraData &image_measurements)
     };
     std::sort(features_up_msckf.begin(), features_up_msckf.end(), compare_feature);
 
+    if (odometry_options.use_pal && state_ptr->options.max_msckf_in_update > 0)
+    {
+        std::vector<std::shared_ptr<feature>> pal_feats;
+        std::vector<std::shared_ptr<feature>> rest_feats;
+        double pal_thresh = odometry_options.pal_msckf_min_score;
+        for (const auto &f : features_up_msckf)
+        {
+            double pal_strength = computeFeatureScore(f, image_measurements.timestamp);
+            if (pal_strength >= pal_thresh)
+                pal_feats.push_back(f);
+            else
+                rest_feats.push_back(f);
+        }
+
+        int max_keep = state_ptr->options.max_msckf_in_update;
+        int keep_pal = std::min((int)pal_feats.size(), std::max(0, (int)std::round(odometry_options.pal_msckf_keep_ratio * max_keep)));
+
+        std::vector<std::shared_ptr<feature>> reordered;
+        reordered.insert(reordered.end(), pal_feats.begin(), pal_feats.begin() + keep_pal);
+
+        for (const auto &f : rest_feats)
+        {
+            if ((int)reordered.size() >= max_keep)
+                break;
+            reordered.push_back(f);
+        }
+
+        for (size_t i = keep_pal; i < pal_feats.size() && (int)reordered.size() < max_keep; i++)
+        {
+            reordered.push_back(pal_feats[i]);
+        }
+
+        features_up_msckf.swap(reordered);
+    }
+
     if ((int)features_up_msckf.size() > state_ptr->options.max_msckf_in_update)
         features_up_msckf.erase(features_up_msckf.begin(), features_up_msckf.end() - state_ptr->options.max_msckf_in_update);
 
@@ -1581,8 +1618,6 @@ void voxelStereoVio::pubHistoryVoxels(pcl::PointCloud<pcl::PointXYZI>::Ptr voxel
         point_cloud_msg.header.frame_id = "camera_init";
         pub_voxels_history.publish(point_cloud_msg);
     }
-
-    voxels_history->clear();
 }
 
 void voxelStereoVio::pubVisitVoxels(pcl::PointCloud<pcl::PointXYZI>::Ptr voxels_visit, double &timestamp)

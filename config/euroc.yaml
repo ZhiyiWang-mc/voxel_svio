@@ -84,7 +84,7 @@ odometry_parameter:
     use_mask: false
     use_huber: false
     use_keyframe: true
-    use_pal: false
+    use_pal: true
     pal_patch_radius: 4
     pal_min_grad: 8.0
     pal_min_anisotropy: 0.35
@@ -129,3 +129,5 @@ voxel_parameter:
     score_w_pal: 0.8
     score_w_recency: 0.3
     score_recency_tau: 1.0
+    pal_msckf_keep_ratio: 0.3
+    pal_msckf_min_score: 0.2
