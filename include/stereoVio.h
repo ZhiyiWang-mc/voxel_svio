@@ -129,6 +129,8 @@ private:
     std::map<size_t, int> active_feat_linsys_count;
 
     std::vector<Eigen::Matrix<short, 3, 1>> recent_voxels;
+    std::unordered_set<long long> visited_voxel_keys;
+    pcl::PointCloud<pcl::PointXYZI>::Ptr voxels_visit_accum;
 
     std::ofstream of_statistics;
     boost::posix_time::ptime rT1, rT2, rT3, rT4, rT5, rT6, rT7;

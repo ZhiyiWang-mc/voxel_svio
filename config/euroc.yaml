@@ -84,7 +84,7 @@ odometry_parameter:
     use_mask: false
     use_huber: false
     use_keyframe: true
-    use_pal: true
+    use_pal: false
     pal_patch_radius: 4
     pal_min_grad: 8.0
     pal_min_anisotropy: 0.35

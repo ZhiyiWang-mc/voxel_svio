@@ -32,6 +32,7 @@ voxelStereoVio::voxelStereoVio() : it(nh)
     points_window.reset(new pcl::PointCloud<pcl::PointXYZRGB>());
     voxels_history.reset(new pcl::PointCloud<pcl::PointXYZI>());
     voxels_visit.reset(new pcl::PointCloud<pcl::PointXYZI>());
+    voxels_visit_accum.reset(new pcl::PointCloud<pcl::PointXYZI>());
     // display
 
     // odometry_options.recordParameters();
@@ -903,6 +904,11 @@ void voxelStereoVio::getRecentVoxel(double timestamp, pcl::PointCloud<pcl::Point
                             point_temp.intensity = 1;
 
                             voxels_visit->points.push_back(point_temp);
+                            long long key = ((long long)kxx << 32) ^ (((long long)kyy & 0xffff) << 16) ^ ((long long)kzz & 0xffff);
+                            if (visited_voxel_keys.insert(key).second && voxels_visit_accum != nullptr)
+                            {
+                                voxels_visit_accum->points.push_back(point_temp);
+                            }
                             // display
                         }
                     }
@@ -1625,7 +1631,13 @@ void voxelStereoVio::pubVisitVoxels(pcl::PointCloud<pcl::PointXYZI>::Ptr voxels_
     if (pub_voxels_visit.getNumSubscribers() > 0)
     {
         sensor_msgs::PointCloud2 point_cloud_msg;
-        pcl::toROSMsg(*voxels_visit, point_cloud_msg);
+        pcl::PointCloud<pcl::PointXYZI> merged = *voxels_visit;
+        if (voxels_visit_accum != nullptr && !voxels_visit_accum->empty())
+        {
+            merged += *voxels_visit_accum;
+        }
+
+        pcl::toROSMsg(merged, point_cloud_msg);
         point_cloud_msg.header.stamp = ros::Time().fromSec(timestamp);
         point_cloud_msg.header.frame_id = "camera_init";
         pub_voxels_visit.publish(point_cloud_msg);
