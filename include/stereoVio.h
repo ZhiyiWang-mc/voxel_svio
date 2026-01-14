@@ -69,6 +69,8 @@ private:
 
     bool tryToInitialize(cameraData &image_measurements);
 
+    double computeFeatureScore(const std::shared_ptr<feature> &feat, double now) const;
+
     std::queue<cameraData> camera_buffer;
 
     std::queue<imuData> imu_buffer;

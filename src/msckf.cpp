@@ -727,13 +727,41 @@ void updaterMsckf::update(std::shared_ptr<state> state_ptr, std::vector<std::sha
 	}
 	rT2 = boost::posix_time::microsec_clock::local_time();
 
+	auto count_pal_rows = [&](const std::shared_ptr<feature> &feat) {
+		if (!state_ptr->options.use_pal || state_ptr->options.pal_weight_scale <= 0.0 || state_ptr->options.pal_max_weight <= 0.0)
+			return (size_t)0;
+
+		size_t count = 0;
+		for (const auto &pair : feat->timestamps)
+		{
+			auto it_w = feat->pal_weights.find(pair.first);
+			auto it_n = feat->pal_normals.find(pair.first);
+			if (it_w == feat->pal_weights.end() || it_n == feat->pal_normals.end())
+				continue;
+
+			size_t n = pair.second.size();
+			if (it_w->second.size() < n) n = it_w->second.size();
+			if (it_n->second.size() < n) n = it_n->second.size();
+
+			for (size_t m = 0; m < n; m++)
+			{
+				if (it_w->second[m] > 0.0f && it_n->second[m].norm() > 1e-6f)
+					count++;
+			}
+		}
+		return count;
+	};
+
 	size_t max_meas_size = 0;
 	for (size_t i = 0; i < feature_vec.size(); i++)
 	{
+		size_t feat_rows = 0;
 		for (const auto &pair : feature_vec.at(i)->timestamps)
 		{
-			max_meas_size += 2 * feature_vec.at(i)->timestamps[pair.first].size();
+			feat_rows += 2 * feature_vec.at(i)->timestamps[pair.first].size();
 		}
+		feat_rows += count_pal_rows(feature_vec.at(i));
+		max_meas_size += feat_rows;
 	}
 
 	size_t max_hx_size = state_ptr->maxCovSize();
@@ -1086,13 +1114,41 @@ void updaterSlam::update(std::shared_ptr<state> state_ptr, voxelHashMap &voxel_m
 	}
 	rT1 = boost::posix_time::microsec_clock::local_time();
 
+	auto count_pal_rows = [&](const std::shared_ptr<feature> &feat) {
+		if (!state_ptr->options.use_pal || state_ptr->options.pal_weight_scale <= 0.0 || state_ptr->options.pal_max_weight <= 0.0)
+			return (size_t)0;
+
+		size_t count = 0;
+		for (const auto &pair : feat->timestamps)
+		{
+			auto it_w = feat->pal_weights.find(pair.first);
+			auto it_n = feat->pal_normals.find(pair.first);
+			if (it_w == feat->pal_weights.end() || it_n == feat->pal_normals.end())
+				continue;
+
+			size_t n = pair.second.size();
+			if (it_w->second.size() < n) n = it_w->second.size();
+			if (it_n->second.size() < n) n = it_n->second.size();
+
+			for (size_t m = 0; m < n; m++)
+			{
+				if (it_w->second[m] > 0.0f && it_n->second[m].norm() > 1e-6f)
+					count++;
+			}
+		}
+		return count;
+	};
+
 	size_t max_meas_size = 0;
 	for (size_t i = 0; i < feature_vec.size(); i++)
 	{
+		size_t feat_rows = 0;
 		for (const auto &pair : feature_vec.at(i)->timestamps)
 		{
-			max_meas_size += 2 * feature_vec.at(i)->timestamps[pair.first].size();
+			feat_rows += 2 * feature_vec.at(i)->timestamps[pair.first].size();
 		}
+		feat_rows += count_pal_rows(feature_vec.at(i));
+		max_meas_size += feat_rows;
 	}
 
 	size_t max_hx_size = state_ptr->maxCovSize();

@@ -367,6 +367,11 @@ void voxelStereoVio::readParameters()
     nh.param<double>("voxel_parameter/min_distance_points", para_double, 0.03); odometry_options.min_distance_points = odometry_options.state_options.min_distance_points = para_double;
     nh.param<int>("voxel_parameter/nb_voxels_visited", para_int, 1); odometry_options.nb_voxels_visited = para_int;
     nh.param<bool>("voxel_parameter/use_all_points", para_bool, false); odometry_options.use_all_points = para_bool;
+    nh.param<double>("voxel_parameter/score_w_meas", para_double, 1.0); odometry_options.score_w_meas = para_double;
+    nh.param<double>("voxel_parameter/score_w_track", para_double, 0.2); odometry_options.score_w_track = para_double;
+    nh.param<double>("voxel_parameter/score_w_pal", para_double, 0.8); odometry_options.score_w_pal = para_double;
+    nh.param<double>("voxel_parameter/score_w_recency", para_double, 0.3); odometry_options.score_w_recency = para_double;
+    nh.param<double>("voxel_parameter/score_recency_tau", para_double, 1.0); odometry_options.score_recency_tau = para_double;
 }
 
 void voxelStereoVio::allocateMemory()
@@ -905,6 +910,64 @@ void voxelStereoVio::getRecentVoxel(double timestamp, pcl::PointCloud<pcl::Point
     }
 }
 
+double voxelStereoVio::computeFeatureScore(const std::shared_ptr<feature> &feat, double now) const
+{
+    if (feat == nullptr)
+        return -1e9;
+
+    double meas_count = 0.0;
+    double last_ts = -1.0;
+    for (const auto &pair : feat->timestamps)
+    {
+        meas_count += static_cast<double>(pair.second.size());
+        if (!pair.second.empty())
+        {
+            last_ts = std::max(last_ts, pair.second.back());
+        }
+    }
+
+    double track_len = static_cast<double>(feat->num_tracking);
+
+    double pal_strength = 0.0;
+    if (odometry_options.use_pal && odometry_options.pal_weight_scale > 0.0 && odometry_options.pal_max_weight > 0.0)
+    {
+        double acc = 0.0;
+        int cnt = 0;
+        for (const auto &pair : feat->pal_weights)
+        {
+            auto it_n = feat->pal_normals.find(pair.first);
+            if (it_n == feat->pal_normals.end())
+                continue;
+            size_t n = std::min(pair.second.size(), it_n->second.size());
+            for (size_t i = 0; i < n; i++)
+            {
+                if (pair.second[i] > 0.0f && it_n->second[i].norm() > 1e-6f)
+                {
+                    acc += static_cast<double>(pair.second[i]);
+                    cnt++;
+                }
+            }
+        }
+        if (cnt > 0)
+            pal_strength = acc / static_cast<double>(cnt);
+    }
+
+    double rec_term = 0.0;
+    if (last_ts > 0.0)
+    {
+        double dt = std::max(0.0, now - last_ts);
+        double tau = std::max(1e-3, odometry_options.score_recency_tau);
+        rec_term = std::exp(-dt / tau);
+    }
+
+    double score = 0.0;
+    score += odometry_options.score_w_meas * std::log1p(meas_count);
+    score += odometry_options.score_w_track * std::log1p(track_len);
+    score += odometry_options.score_w_pal * pal_strength;
+    score += odometry_options.score_w_recency * rec_term;
+    return score;
+}
+
 void voxelStereoVio::featureUpdate(cameraData &image_measurements)
 {
     if (state_ptr->timestamp > image_measurements.timestamp)
@@ -1052,21 +1115,39 @@ void voxelStereoVio::featureUpdate(cameraData &image_measurements)
         }
         else
         {
-            std::shared_ptr<mapPoint> map_point_ptr = voxel_block.points.front();
+            double best_score = -1e9;
+            std::shared_ptr<mapPoint> best_point = nullptr;
+            std::shared_ptr<feature> best_feat = nullptr;
 
-            std::shared_ptr<feature> feature = featureTracker->getFeatureDatabase()->getFeature(map_point_ptr->feature_id);
-            if (feature != nullptr)
-                features_slam.push_back(feature);
+            for (int j = 0; j < voxel_block.points.size(); j++)
+            {
+                std::shared_ptr<mapPoint> map_point_ptr = voxel_block.points[j];
+                std::shared_ptr<feature> feature = featureTracker->getFeatureDatabase()->getFeature(map_point_ptr->feature_id);
 
-            assert(map_point_ptr->unique_camera_id != -1);
+                double score = computeFeatureScore(feature, image_measurements.timestamp);
+                if (score > best_score)
+                {
+                    best_score = score;
+                    best_point = map_point_ptr;
+                    best_feat = feature;
+                }
+            }
 
-            bool current_host_cam = std::find(image_measurements.camera_ids.begin(), image_measurements.camera_ids.end(), map_point_ptr->unique_camera_id) != image_measurements.camera_ids.end();
+            if (best_feat != nullptr)
+                features_slam.push_back(best_feat);
 
-            if (feature == nullptr && current_host_cam)
-                map_point_ptr->should_marg = true;
+            if (best_point != nullptr)
+            {
+                assert(best_point->unique_camera_id != -1);
 
-            if (map_point_ptr->update_fail_count > 1)
-                map_point_ptr->should_marg = true;
+                bool current_host_cam = std::find(image_measurements.camera_ids.begin(), image_measurements.camera_ids.end(), best_point->unique_camera_id) != image_measurements.camera_ids.end();
+
+                if (best_feat == nullptr && current_host_cam)
+                    best_point->should_marg = true;
+
+                if (best_point->update_fail_count > 1)
+                    best_point->should_marg = true;
+            }
         }
     }
 
@@ -1103,17 +1184,12 @@ void voxelStereoVio::featureUpdate(cameraData &image_measurements)
     features_up_msckf.insert(features_up_msckf.end(), features_marg.begin(), features_marg.end());
     features_up_msckf.insert(features_up_msckf.end(), features_maxtracks.begin(), features_maxtracks.end());
 
-    auto compare_feature = [](const std::shared_ptr<feature> &a, const std::shared_ptr<feature> &b) -> bool {
-        size_t size_a = 0;
-        size_t size_b = 0;
-    
-        for (const auto &pair : a->timestamps)
-            size_a += pair.second.size();
-        
-        for (const auto &pair : b->timestamps)
-            size_b += pair.second.size();
-
-        return size_a < size_b;
+    auto compare_feature = [&](const std::shared_ptr<feature> &a, const std::shared_ptr<feature> &b) -> bool {
+        double score_a = computeFeatureScore(a, image_measurements.timestamp);
+        double score_b = computeFeatureScore(b, image_measurements.timestamp);
+        if (std::abs(score_a - score_b) < 1e-6)
+            return a->feature_id < b->feature_id;
+        return score_a < score_b;
     };
     std::sort(features_up_msckf.begin(), features_up_msckf.end(), compare_feature);
 

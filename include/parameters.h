@@ -262,5 +262,15 @@ public:
 
     double pal_max_weight = 3.0;
 
+    double score_w_meas = 1.0;
+
+    double score_w_track = 0.2;
+
+    double score_w_pal = 0.8;
+
+    double score_w_recency = 0.3;
+
+    double score_recency_tau = 1.0;
+
     void recordParameters();
 };
