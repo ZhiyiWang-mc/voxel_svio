@@ -14,6 +14,7 @@
 
 // function include
 #include "utility.h"
+#include "feature.h"
 #include "sensorData.h"
 #include "frame.h"
 #include "pixelSelector.h"
@@ -28,7 +29,8 @@ class trackKLT
 public:
 
 	trackKLT(std::unordered_map<size_t, std::shared_ptr<cameraBase>> camera_calib_, int num_features_, 
-		HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_);
+		HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_, 
+		const lineAnchorOptions &line_options_);
 
 	void feedNewImage(const cameraData &image_measurements, std::shared_ptr<frame> fh);
 
@@ -58,6 +60,8 @@ private:
 	int num_features;
 
 	HistogramMethod histogram_method;
+
+	lineAnchorOptions line_options;
 
 	std::map<size_t, cv::Mat> img_last;
 

@@ -41,6 +41,10 @@ public:
 
   std::shared_ptr<frame> host_frame;
 
+  Eigen::Vector2f anchor_line_dir = Eigen::Vector2f::Zero();
+
+  float line_quality = 0.0f;
+
   short voxel_idx[3];
 
   void update(const Eigen::VectorXd &dx) override;
@@ -78,6 +82,14 @@ struct voxelBlock {
     explicit voxelBlock(int num_points_ = 20) : num_points(num_points_) { points.reserve(num_points_); }
 
     std::vector<std::shared_ptr<mapPoint>> points;
+
+    Eigen::Vector3d line_point = Eigen::Vector3d::Zero();
+
+    Eigen::Vector3d line_dir = Eigen::Vector3d::Zero();
+
+    double line_quality = 0.0;
+
+    double line_update_time = -1.0;
 
     bool IsFull() const { return num_points <= points.size(); }
 

@@ -112,6 +112,25 @@ feature_parameter:
     max_cond_number: 20000.0
     keyframe_parallax: 20
 
+line_parameter:
+    use_point_lines: true
+    patch_halfsize: 6
+    grad_threshold: 12.0
+    min_support: 12
+    min_anisotropy: 0.40
+    weight_scale: 0.8
+    weight_max: 1.0
+    min_track: 4
+    point_gate_px: 3.0
+    min_weight: 0.25
+    voxel_radius: 1
+    voxel_min_points: 10
+    voxel_min_anisotropy: 0.6
+    voxel_max_angle_deg: 20.0
+    voxel_max_dist: 0.5
+    rot_deg: 35.0
+    rot_point_weight: 0.5
+
 voxel_parameter:
     voxel_size: 1.0             # raw: 0.1
     use_all_points: false

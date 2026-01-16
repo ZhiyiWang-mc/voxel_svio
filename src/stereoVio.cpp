@@ -1,5 +1,51 @@
 #include "stereoVio.h"
 
+namespace
+{
+bool projectPointToImage(const std::shared_ptr<state> &state_ptr, size_t cam_id, double timestamp,
+    const Eigen::Vector3d &p_FinG, Eigen::Vector2d &uv_out)
+{
+    auto it_clone = state_ptr->clones_imu.find(timestamp);
+    if (it_clone == state_ptr->clones_imu.end())
+        return false;
+
+    auto it_calib = state_ptr->calib_cam_imu.find(cam_id);
+    auto it_cam = state_ptr->cam_intrinsics_cameras.find(cam_id);
+    if (it_calib == state_ptr->calib_cam_imu.end() || it_cam == state_ptr->cam_intrinsics_cameras.end())
+        return false;
+
+    Eigen::Matrix3d R_ItoC = it_calib->second->getRot();
+    Eigen::Vector3d p_IinC = it_calib->second->getPos();
+
+    Eigen::Matrix3d R_GtoIi = it_clone->second->getRot();
+    Eigen::Vector3d p_IiinG = it_clone->second->getPos();
+
+    Eigen::Matrix3d R_GtoCi = R_ItoC * R_GtoIi;
+    Eigen::Vector3d p_CiinG = p_IiinG - R_GtoCi.transpose() * p_IinC;
+    Eigen::Vector3d p_FinCi = R_GtoCi * (p_FinG - p_CiinG);
+
+    if (p_FinCi(2) <= 0.05)
+        return false;
+
+    Eigen::Vector2d uv_norm(p_FinCi(0) / p_FinCi(2), p_FinCi(1) / p_FinCi(2));
+    uv_out = it_cam->second->distortD(uv_norm);
+    return true;
+}
+
+cv::Scalar lineColorFromQuality(double quality)
+{
+    double q = quality;
+    if (q < 0.0)
+        q = 0.0;
+    else if (q > 1.0)
+        q = 1.0;
+
+    int g = static_cast<int>(50 + 205 * q);
+    int r = static_cast<int>(255 * (1.0 - q));
+    return cv::Scalar(0, g, r);
+}
+} // namespace
+
 voxelStereoVio::voxelStereoVio() : it(nh)
 {
     readParameters();
@@ -338,6 +384,24 @@ void voxelStereoVio::readParameters()
     nh.param<bool>("odometry_parameter/use_huber", para_bool, true); odometry_options.state_options.use_huber = para_bool;
     nh.param<bool>("odometry_parameter/use_keyframe", para_bool, true); odometry_options.use_keyframe = para_bool;
 
+    nh.param<bool>("line_parameter/use_point_lines", para_bool, true); odometry_options.use_point_lines = para_bool; setting_line_enable = para_bool;
+    nh.param<int>("line_parameter/patch_halfsize", para_int, 6); odometry_options.line_patch_halfsize = para_int;
+    nh.param<double>("line_parameter/grad_threshold", para_double, 10.0); odometry_options.line_grad_threshold = para_double;
+    nh.param<int>("line_parameter/min_support", para_int, 10); odometry_options.line_min_support = para_int;
+    nh.param<double>("line_parameter/min_anisotropy", para_double, 0.40); odometry_options.line_min_anisotropy = para_double;
+    nh.param<double>("line_parameter/weight_scale", para_double, 0.8); odometry_options.line_weight_scale = para_double;
+    nh.param<double>("line_parameter/weight_max", para_double, 1.0); odometry_options.line_weight_max = para_double;
+    nh.param<int>("line_parameter/min_track", para_int, 4); odometry_options.line_min_track = para_int; setting_line_min_track = para_int;
+    nh.param<double>("line_parameter/point_gate_px", para_double, 2.5); odometry_options.line_point_gate = para_double; setting_line_point_gate = para_double;
+    nh.param<double>("line_parameter/min_weight", para_double, 0.25); odometry_options.line_min_weight = para_double; setting_line_min_weight = para_double;
+    nh.param<int>("line_parameter/voxel_radius", para_int, 1); odometry_options.line_voxel_radius = para_int; setting_line_voxel_radius = para_int;
+    nh.param<int>("line_parameter/voxel_min_points", para_int, 8); odometry_options.line_voxel_min_points = para_int; setting_line_voxel_min_points = para_int;
+    nh.param<double>("line_parameter/voxel_min_anisotropy", para_double, 0.6); odometry_options.line_voxel_min_anisotropy = para_double; setting_line_voxel_min_anisotropy = para_double;
+    nh.param<double>("line_parameter/voxel_max_angle_deg", para_double, 20.0); odometry_options.line_voxel_max_angle_deg = para_double; setting_line_voxel_max_angle_deg = para_double;
+    nh.param<double>("line_parameter/voxel_max_dist", para_double, 0.3); odometry_options.line_voxel_max_dist = para_double; setting_line_voxel_max_dist = para_double;
+    nh.param<double>("line_parameter/rot_deg", para_double, 35.0); odometry_options.line_rot_deg = para_double; setting_line_rot_deg = para_double;
+    nh.param<double>("line_parameter/rot_point_weight", para_double, 0.5); odometry_options.line_rot_point_weight = para_double; setting_line_rot_point_weight = para_double;
+
     nh.param<bool>("feature_parameter/refine_features", para_bool, true); odometry_options.featinit_options.refine_features = para_bool;
     nh.param<int>("feature_parameter/max_runs", para_int, 5); odometry_options.featinit_options.max_runs = para_int;
     nh.param<double>("feature_parameter/init_lamda", para_double, 1e-3); odometry_options.featinit_options.init_lamda = para_double;
@@ -393,8 +457,17 @@ void voxelStereoVio::allocateMemory()
 
     int init_max_features = std::floor((double)odometry_options.init_options.init_max_features / (double)2.0);
 
+    lineAnchorOptions line_options;
+    line_options.enable = odometry_options.use_point_lines;
+    line_options.patch_halfsize = odometry_options.line_patch_halfsize;
+    line_options.grad_threshold = static_cast<float>(odometry_options.line_grad_threshold);
+    line_options.min_support = odometry_options.line_min_support;
+    line_options.min_anisotropy = static_cast<float>(odometry_options.line_min_anisotropy);
+    line_options.weight_scale = static_cast<float>(odometry_options.line_weight_scale);
+    line_options.max_weight = static_cast<float>(odometry_options.line_weight_max);
+
     featureTracker = std::shared_ptr<trackKLT>(new trackKLT(state_ptr->cam_intrinsics_cameras, init_max_features, odometry_options.histogram_method, 
-        odometry_options.fast_threshold, odometry_options.patch_size_x, odometry_options.patch_size_y, odometry_options.min_px_dist));
+        odometry_options.fast_threshold, odometry_options.patch_size_x, odometry_options.patch_size_y, odometry_options.min_px_dist, line_options));
 
     propagator_ptr = std::make_shared<propagator>(odometry_options.imu_noises, odometry_options.gravity_mag);
 
@@ -1009,6 +1082,32 @@ void voxelStereoVio::featureUpdate(cameraData &image_measurements)
         }
     }
 
+    auto score_map_point = [](const std::shared_ptr<mapPoint> &mp) {
+        double line_bonus = (mp->line_quality > 0.0f) ? 0.5 * static_cast<double>(mp->line_quality) : 0.0;
+        double reliability = 1.0 / (1.0 + mp->update_fail_count);
+        return reliability + line_bonus;
+    };
+
+    auto selectVoxelCandidate = [&](voxelBlock &block) -> std::shared_ptr<mapPoint> {
+        if (block.points.empty())
+            return nullptr;
+
+        std::shared_ptr<mapPoint> best = block.points.front();
+        double best_score = score_map_point(best);
+
+        for (const auto &mp : block.points)
+        {
+            double sc = score_map_point(mp);
+            if (sc > best_score)
+            {
+                best = mp;
+                best_score = sc;
+            }
+        }
+
+        return best;
+    };
+
     for (int i = 0; i < recent_voxels.size(); i++)
     {
         short kx = recent_voxels[i][0];
@@ -1041,7 +1140,9 @@ void voxelStereoVio::featureUpdate(cameraData &image_measurements)
         }
         else
         {
-            std::shared_ptr<mapPoint> map_point_ptr = voxel_block.points.front();
+            std::shared_ptr<mapPoint> map_point_ptr = selectVoxelCandidate(voxel_block);
+            if (map_point_ptr == nullptr)
+                continue;
 
             std::shared_ptr<feature> feature = featureTracker->getFeatureDatabase()->getFeature(map_point_ptr->feature_id);
             if (feature != nullptr)
@@ -1093,16 +1194,34 @@ void voxelStereoVio::featureUpdate(cameraData &image_measurements)
     features_up_msckf.insert(features_up_msckf.end(), features_maxtracks.begin(), features_maxtracks.end());
 
     auto compare_feature = [](const std::shared_ptr<feature> &a, const std::shared_ptr<feature> &b) -> bool {
-        size_t size_a = 0;
-        size_t size_b = 0;
-    
-        for (const auto &pair : a->timestamps)
-            size_a += pair.second.size();
-        
-        for (const auto &pair : b->timestamps)
-            size_b += pair.second.size();
+        auto score = [](const std::shared_ptr<feature> &f) {
+            size_t obs_count = 0;
+            size_t line_count = 0;
 
-        return size_a < size_b;
+            for (const auto &pair : f->timestamps)
+                obs_count += pair.second.size();
+
+            for (const auto &pair : f->line_weights)
+            {
+                auto it_dir = f->line_directions.find(pair.first);
+                auto it_ts = f->timestamps.find(pair.first);
+                if (it_dir == f->line_directions.end() || it_ts == f->timestamps.end())
+                    continue;
+
+                size_t usable = std::min(pair.second.size(), it_dir->second.size());
+                usable = std::min(usable, it_ts->second.size());
+
+                for (size_t idx = 0; idx < usable; idx++)
+                {
+                    if (pair.second.at(idx) > 0.0f && f->line_directions[pair.first].at(idx).squaredNorm() > 1e-8f)
+                        line_count++;
+                }
+            }
+
+            return static_cast<double>(obs_count) + 0.5 * static_cast<double>(line_count);
+        };
+
+        return score(a) < score(b);
     };
     std::sort(features_up_msckf.begin(), features_up_msckf.end(), compare_feature);
 
@@ -1382,6 +1501,7 @@ void voxelStereoVio::pubFeatImage(cv::Mat &stereo_image, double &timestamp)
     if (!stereo_image.empty() && pub_feat_image.getNumSubscribers() > 0)
     {
         try {
+            drawVoxelLinesOnStereoImage(stereo_image, timestamp);
             sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", stereo_image).toImageMsg();
             msg->header.stamp = ros::Time().fromSec(timestamp);
             msg->header.frame_id = "camera_init";
@@ -1389,6 +1509,98 @@ void voxelStereoVio::pubFeatImage(cv::Mat &stereo_image, double &timestamp)
         }
         catch (cv_bridge::Exception& e) {
             ROS_ERROR("cv_bridge exception: %s", e.what());
+        }
+    }
+}
+
+void voxelStereoVio::drawVoxelLinesOnStereoImage(cv::Mat &stereo_image, double timestamp)
+{
+    if (state_ptr == nullptr)
+        return;
+
+    if (state_ptr->clones_imu.find(timestamp) == state_ptr->clones_imu.end())
+        return;
+
+    if (state_ptr->map_points.empty())
+        return;
+
+    const int width = wG[0];
+    const int height = hG[0];
+
+    std::unordered_set<voxel> voxel_candidates;
+    voxel_candidates.reserve(state_ptr->map_points.size() * 4);
+
+    int visit_radius = odometry_options.nb_voxels_visited;
+    for (const auto &pair : state_ptr->map_points)
+    {
+        const auto &p_FinG = pair.second->getPointXYZ(false);
+        voxel base = voxel::coordinates(p_FinG, odometry_options.voxel_size);
+
+        for (short dx = -visit_radius; dx <= visit_radius; dx++)
+        {
+            for (short dy = -visit_radius; dy <= visit_radius; dy++)
+            {
+                for (short dz = -visit_radius; dz <= visit_radius; dz++)
+                {
+                    voxel vox(base.x + dx, base.y + dy, base.z + dz);
+                    if (voxel_map.find(vox) != voxel_map.end())
+                        voxel_candidates.insert(vox);
+                }
+            }
+        }
+    }
+
+    const int max_segments = 200;
+    int drawn_segments = 0;
+
+    double half_length = odometry_options.voxel_size * (2.0 * setting_line_voxel_radius + 1.0) * 0.5;
+    if (half_length <= 0.0)
+        half_length = odometry_options.voxel_size;
+
+    for (const auto &vox : voxel_candidates)
+    {
+        if (drawn_segments >= max_segments)
+            break;
+
+        auto search = voxel_map.find(vox);
+        if (search == voxel_map.end())
+            continue;
+
+        if (!mapManagement::updateVoxelLine(voxel_map, vox, setting_line_voxel_radius, setting_line_voxel_min_points,
+            setting_line_voxel_min_anisotropy, odometry_options.voxel_size, timestamp))
+            continue;
+
+        const auto &block = search.value();
+        if (block.line_quality <= 0.0 || block.line_dir.squaredNorm() < 1e-9)
+            continue;
+
+        Eigen::Vector3d dir = block.line_dir.normalized();
+        Eigen::Vector3d p0 = block.line_point - dir * half_length;
+        Eigen::Vector3d p1 = block.line_point + dir * half_length;
+
+        cv::Scalar color = lineColorFromQuality(block.line_quality);
+
+        for (size_t cam_id = 0; cam_id < 2; cam_id++)
+        {
+            Eigen::Vector2d uv0;
+            Eigen::Vector2d uv1;
+            if (!projectPointToImage(state_ptr, cam_id, timestamp, p0, uv0))
+                continue;
+            if (!projectPointToImage(state_ptr, cam_id, timestamp, p1, uv1))
+                continue;
+
+            int y_offset = (cam_id == 0) ? 0 : height;
+            cv::Point pt0(static_cast<int>(uv0(0)), static_cast<int>(uv0(1)) + y_offset);
+            cv::Point pt1(static_cast<int>(uv1(0)), static_cast<int>(uv1(1)) + y_offset);
+            cv::Rect roi(0, y_offset, width, height);
+
+            if (cv::clipLine(roi, pt0, pt1))
+            {
+                cv::line(stereo_image, pt0, pt1, color, 1, cv::LINE_AA);
+                drawn_segments++;
+                if (drawn_segments >= max_segments)
+                    break;
+            }
         }
     }
 }

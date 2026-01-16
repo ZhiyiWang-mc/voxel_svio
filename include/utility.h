@@ -66,6 +66,28 @@ extern float setting_huber_th;
 
 extern float setting_min_parallax;
 
+extern bool setting_line_enable;
+
+extern int setting_line_min_track;
+
+extern float setting_line_point_gate;
+
+extern float setting_line_min_weight;
+
+extern int setting_line_voxel_radius;
+
+extern int setting_line_voxel_min_points;
+
+extern float setting_line_voxel_min_anisotropy;
+
+extern float setting_line_voxel_max_angle_deg;
+
+extern float setting_line_voxel_max_dist;
+
+extern float setting_line_rot_deg;
+
+extern float setting_line_rot_point_weight;
+
 class gammaPixel
 {
 public:

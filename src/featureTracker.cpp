@@ -5,9 +5,10 @@
 #include "state.h"
 
 trackKLT::trackKLT(std::unordered_map<size_t, std::shared_ptr<cameraBase>> camera_calib_, int num_features_, 
-  HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_) 
-  : camera_calib(camera_calib_), database(new featureDatabase()), num_features(num_features_), histogram_method(histogram_method_), 
-  threshold(fast_threshold_), patch_size_x(patch_size_x_), patch_size_y(patch_size_y_), min_px_dist(min_px_dist_)
+  HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_, 
+  const lineAnchorOptions &line_options_) 
+  : camera_calib(camera_calib_), database(new featureDatabase(line_options_)), num_features(num_features_), histogram_method(histogram_method_), 
+  threshold(fast_threshold_), patch_size_x(patch_size_x_), patch_size_y(patch_size_y_), min_px_dist(min_px_dist_), line_options(line_options_)
 {
   current_id = 1;
 

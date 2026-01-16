@@ -2,6 +2,202 @@
 #include "state.h"
 #include "stateHelper.h"
 #include "mapManagement.h"
+#include <algorithm>
+
+namespace
+{
+size_t countResidualRows(const std::shared_ptr<feature> &feat)
+{
+	size_t rows = 0;
+
+	for (const auto &pair : feat->timestamps)
+	{
+		rows += 2 * pair.second.size();
+	}
+
+	return rows;
+}
+
+struct VoxelLineData
+{
+	bool valid = false;
+	Eigen::Vector3d point = Eigen::Vector3d::Zero();
+	Eigen::Vector3d dir = Eigen::Vector3d::Zero();
+	double quality = 0.0;
+};
+
+bool computeImageLineDirection(const std::shared_ptr<state> &state_ptr, size_t cam_id, double timestamp, const Eigen::Vector3d &p_FinG,
+	const Eigen::Vector3d &line_dir_G, Eigen::Vector2d &dir_out)
+{
+	auto it_clone = state_ptr->clones_imu.find(timestamp);
+	if (it_clone == state_ptr->clones_imu.end())
+		return false;
+
+	std::shared_ptr<poseJpl> calibration = state_ptr->calib_cam_imu.at(cam_id);
+	Eigen::Matrix3d R_ItoC = calibration->getRot();
+	Eigen::Vector3d p_IinC = calibration->getPos();
+
+	Eigen::Matrix3d R_GtoIi = it_clone->second->getRot();
+	Eigen::Vector3d p_IiinG = it_clone->second->getPos();
+
+	Eigen::Matrix3d R_GtoCi = R_ItoC * R_GtoIi;
+	Eigen::Vector3d p_CiinG = p_IiinG - R_GtoCi.transpose() * p_IinC;
+
+	Eigen::Vector3d p_FinCi = R_GtoCi * (p_FinG - p_CiinG);
+	Eigen::Vector3d d_C = R_GtoCi * line_dir_G;
+
+	if (p_FinCi(2) <= 0.0 || d_C.norm() < 1e-6)
+		return false;
+
+	Eigen::Vector3d p_FinCi_2 = p_FinCi + d_C;
+	if (p_FinCi_2(2) <= 0.0)
+		p_FinCi_2 = p_FinCi - d_C;
+	if (p_FinCi_2(2) <= 0.0)
+		return false;
+
+	Eigen::Vector2d uv0_norm(p_FinCi(0) / p_FinCi(2), p_FinCi(1) / p_FinCi(2));
+	Eigen::Vector2d uv1_norm(p_FinCi_2(0) / p_FinCi_2(2), p_FinCi_2(1) / p_FinCi_2(2));
+
+	Eigen::Vector2d uv0 = state_ptr->cam_intrinsics_cameras.at(cam_id)->distortD(uv0_norm);
+	Eigen::Vector2d uv1 = state_ptr->cam_intrinsics_cameras.at(cam_id)->distortD(uv1_norm);
+
+	Eigen::Vector2d dir = uv1 - uv0;
+	double norm = dir.norm();
+	if (norm < 1e-6)
+		return false;
+
+	dir_out = dir / norm;
+	return true;
+}
+
+VoxelLineData getVoxelLineForPoint(const std::shared_ptr<state> &state_ptr, voxelHashMap &voxel_map, const std::shared_ptr<mapPoint> &map_point)
+{
+	VoxelLineData data;
+
+	voxel vox(map_point->voxel_idx[0], map_point->voxel_idx[1], map_point->voxel_idx[2]);
+	mapManagement::updateVoxelLine(voxel_map, vox, setting_line_voxel_radius, setting_line_voxel_min_points,
+		setting_line_voxel_min_anisotropy, state_ptr->options.voxel_size, state_ptr->timestamp);
+
+	Eigen::Vector3d line_point;
+	Eigen::Vector3d line_dir;
+	double line_quality = 0.0;
+
+	if (!mapManagement::getVoxelLine(voxel_map, vox, line_point, line_dir, line_quality))
+		return data;
+
+	if (line_dir.norm() < 1e-6)
+		return data;
+
+	data.valid = true;
+	data.point = line_point;
+	data.dir = line_dir.normalized();
+	data.quality = std::max(0.0, std::min(1.0, line_quality));
+	return data;
+}
+
+void gateLineWeightsWithVoxel(const std::shared_ptr<state> &state_ptr, voxelHashMap &voxel_map, const std::shared_ptr<mapPoint> &map_point,
+	const std::unordered_map<size_t, std::vector<double>> &timestamps,
+	std::unordered_map<size_t, std::vector<Eigen::Vector2f>> &line_dirs,
+	std::unordered_map<size_t, std::vector<float>> &line_weights)
+{
+	if (!setting_line_enable)
+	{
+		for (auto &pair : line_weights)
+			std::fill(pair.second.begin(), pair.second.end(), 0.0f);
+		return;
+	}
+
+	VoxelLineData voxel_line = getVoxelLineForPoint(state_ptr, voxel_map, map_point);
+	if (!voxel_line.valid)
+	{
+		for (auto &pair : line_weights)
+			std::fill(pair.second.begin(), pair.second.end(), 0.0f);
+		return;
+	}
+
+	Eigen::Vector3d p_FinG = map_point->getPointXYZ(false);
+	double dist = (p_FinG - voxel_line.point).cross(voxel_line.dir).norm();
+
+	if (setting_line_voxel_max_dist > 0.0f && dist > setting_line_voxel_max_dist)
+	{
+		for (auto &pair : line_weights)
+			std::fill(pair.second.begin(), pair.second.end(), 0.0f);
+		return;
+	}
+
+	double dist_scale = 1.0;
+	if (setting_line_voxel_max_dist > 0.0f)
+		dist_scale = std::max(0.0, 1.0 - dist / setting_line_voxel_max_dist);
+
+	for (auto &pair : line_weights)
+	{
+		auto it_dir = line_dirs.find(pair.first);
+		auto it_ts = timestamps.find(pair.first);
+		if (it_dir == line_dirs.end() || it_ts == timestamps.end())
+		{
+			std::fill(pair.second.begin(), pair.second.end(), 0.0f);
+			continue;
+		}
+
+		size_t usable = std::min(pair.second.size(), it_dir->second.size());
+		usable = std::min(usable, it_ts->second.size());
+
+		for (size_t m = 0; m < usable; m++)
+		{
+			float patch_weight = pair.second.at(m);
+			if (patch_weight <= 0.0f)
+			{
+				pair.second.at(m) = 0.0f;
+				continue;
+			}
+
+			Eigen::Vector2d dir_obs = it_dir->second.at(m).cast<double>();
+			double norm = dir_obs.norm();
+			if (norm < 1e-6)
+			{
+				pair.second.at(m) = 0.0f;
+				continue;
+			}
+			dir_obs /= norm;
+
+			Eigen::Vector2d dir_img;
+			if (!computeImageLineDirection(state_ptr, pair.first, it_ts->second.at(m), p_FinG, voxel_line.dir, dir_img))
+			{
+				pair.second.at(m) = 0.0f;
+				continue;
+			}
+
+			double cosang = std::abs(dir_img.dot(dir_obs));
+			cosang = std::min(1.0, std::max(-1.0, cosang));
+			double ang = std::acos(cosang) * 180.0 / 3.14159265358979323846;
+
+			if (setting_line_voxel_max_angle_deg > 0.0f && ang > setting_line_voxel_max_angle_deg)
+			{
+				pair.second.at(m) = 0.0f;
+				continue;
+			}
+
+			double weight_scale = voxel_line.quality * dist_scale;
+			if (weight_scale <= 0.0)
+			{
+				pair.second.at(m) = 0.0f;
+				continue;
+			}
+
+			double align_scale = std::max(0.0, cosang);
+			double final_weight = static_cast<double>(patch_weight) * weight_scale * align_scale;
+			if (final_weight < setting_line_min_weight)
+			{
+				pair.second.at(m) = 0.0f;
+				continue;
+			}
+
+			it_dir->second.at(m) = dir_obs.cast<float>();
+			pair.second.at(m) = static_cast<float>(final_weight);
+		}
+	}
+}
+} // namespace
 
 propagator::propagator(noiseManager noises_, double gravity_mag_) : noises(noises_), cache_imu_valid(false)
 {
@@ -730,10 +926,7 @@ void updaterMsckf::update(std::shared_ptr<state> state_ptr, std::vector<std::sha
 	size_t max_meas_size = 0;
 	for (size_t i = 0; i < feature_vec.size(); i++)
 	{
-		for (const auto &pair : feature_vec.at(i)->timestamps)
-		{
-			max_meas_size += 2 * feature_vec.at(i)->timestamps[pair.first].size();
-		}
+		max_meas_size += countResidualRows(feature_vec.at(i));
 	}
 
 	size_t max_hx_size = state_ptr->maxCovSize();
@@ -756,6 +949,8 @@ void updaterMsckf::update(std::shared_ptr<state> state_ptr, std::vector<std::sha
 		feat.feature_id = (*it2)->feature_id;
 		feat.uvs = (*it2)->uvs;
 		feat.uvs_norm = (*it2)->uvs_norm;
+		feat.line_directions.clear();
+		feat.line_weights.clear();
 		feat.timestamps = (*it2)->timestamps;
 		feat.frames = (*it2)->frames;
 		feat.color = (*it2)->color;
@@ -962,6 +1157,10 @@ void updaterSlam::delayedInit(std::shared_ptr<state> state_ptr, voxelHashMap &vo
 		feat.feature_id = (*it2)->feature_id;
 		feat.uvs = (*it2)->uvs;
 		feat.uvs_norm = (*it2)->uvs_norm;
+		std::unordered_map<size_t, std::vector<Eigen::Vector2f>> line_dirs = (*it2)->line_directions;
+		std::unordered_map<size_t, std::vector<float>> line_weights = (*it2)->line_weights;
+		feat.line_directions.clear();
+		feat.line_weights.clear();
 		feat.timestamps = (*it2)->timestamps;
 
 		feat.frames = (*it2)->frames;
@@ -991,6 +1190,22 @@ void updaterSlam::delayedInit(std::shared_ptr<state> state_ptr, voxelHashMap &vo
 		map_point_ptr->host_frame = feat.frames[(*it2)->anchor_cam_id].back();
 		map_point_ptr->anchor_cam_id = feat.anchor_cam_id;
 		map_point_ptr->anchor_clone_timestamp = feat.anchor_clone_timestamp;
+
+		auto it_dir_anchor = line_dirs.find(feat.anchor_cam_id);
+		auto it_w_anchor = line_weights.find(feat.anchor_cam_id);
+		if (it_dir_anchor != line_dirs.end() && it_w_anchor != line_weights.end() &&
+			!it_dir_anchor->second.empty() && it_dir_anchor->second.size() == it_w_anchor->second.size())
+		{
+			size_t anchor_idx = it_dir_anchor->second.size() - 1;
+			Eigen::Vector2f anchor_dir = it_dir_anchor->second.at(anchor_idx);
+			float anchor_w = it_w_anchor->second.at(anchor_idx);
+
+			if (anchor_dir.squaredNorm() > 1e-6f && anchor_w > 0.0f)
+			{
+				map_point_ptr->anchor_line_dir = anchor_dir.normalized();
+				map_point_ptr->line_quality = anchor_w;
+			}
+		}
 
 		map_point_ptr->setPointXYZ(feat.position_global, false);
 		map_point_ptr->setPointXYZ(feat.position_global_fej, true);
@@ -1085,10 +1300,7 @@ void updaterSlam::update(std::shared_ptr<state> state_ptr, voxelHashMap &voxel_m
 	size_t max_meas_size = 0;
 	for (size_t i = 0; i < feature_vec.size(); i++)
 	{
-		for (const auto &pair : feature_vec.at(i)->timestamps)
-		{
-			max_meas_size += 2 * feature_vec.at(i)->timestamps[pair.first].size();
-		}
+		max_meas_size += countResidualRows(feature_vec.at(i));
 	}
 
 	size_t max_hx_size = state_ptr->maxCovSize();
@@ -1113,6 +1325,11 @@ void updaterSlam::update(std::shared_ptr<state> state_ptr, voxelHashMap &voxel_m
 		feat.feature_id = (*it2)->feature_id;
 		feat.uvs = (*it2)->uvs;
 		feat.uvs_norm = (*it2)->uvs_norm;
+		std::unordered_map<size_t, std::vector<Eigen::Vector2f>> line_dirs = (*it2)->line_directions;
+		std::unordered_map<size_t, std::vector<float>> line_weights = (*it2)->line_weights;
+		gateLineWeightsWithVoxel(state_ptr, voxel_map, map_point, (*it2)->timestamps, line_dirs, line_weights);
+		feat.line_directions = line_dirs;
+		feat.line_weights = line_weights;
 		feat.timestamps = (*it2)->timestamps;
 		feat.frames = (*it2)->frames;
 		feat.color = (*it2)->color;

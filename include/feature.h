@@ -18,6 +18,17 @@
 
 class state;
 
+struct lineAnchorOptions
+{
+  bool enable = true;
+  int patch_halfsize = 6;
+  float grad_threshold = 10.0f;
+  int min_support = 10;
+  float min_anisotropy = 0.40f;
+  float weight_scale = 0.8f;
+  float max_weight = 1.0f;
+};
+
 class feature
 {
 public:
@@ -29,6 +40,10 @@ public:
   std::unordered_map<size_t, std::vector<Eigen::VectorXf>> uvs;
 
   std::unordered_map<size_t, std::vector<Eigen::VectorXf>> uvs_norm;
+
+  std::unordered_map<size_t, std::vector<Eigen::Vector2f>> line_directions;
+
+  std::unordered_map<size_t, std::vector<float>> line_weights;
 
   std::unordered_map<size_t, std::vector<double>> timestamps;
 
@@ -61,7 +76,7 @@ class featureDatabase
 {
 public:
 
-  featureDatabase();
+  featureDatabase(const lineAnchorOptions &line_options_ = lineAnchorOptions());
 
   std::shared_ptr<feature> getFeature(size_t id, bool remove = false);
 
@@ -86,6 +101,8 @@ public:
 protected:
 
   std::unordered_map<size_t, std::shared_ptr<feature>> features_id_lookup;
+
+  lineAnchorOptions line_options;
 
   int last_track_num;
 };

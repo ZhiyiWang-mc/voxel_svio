@@ -1,6 +1,8 @@
 #include "updaterHelper.h"
 #include "state.h"
 #include "quatOps.h"
+#include <algorithm>
+#include <cmath>
 
 void updaterHelper::getFeatureJacobianRepresentation(std::shared_ptr<state> state_ptr, updaterHelperFeature &feature, Eigen::MatrixXd &H_f,
 	std::vector<Eigen::MatrixXd> &H_x, std::vector<std::shared_ptr<baseType>> &x_order)
@@ -18,6 +20,8 @@ void updaterHelper::getFeatureJacobianFull(std::shared_ptr<state> state_ptr, upd
 	{
 		total_meas += (int)pair.second.size();
 	}
+
+	bool use_lines = setting_line_enable && (total_meas >= setting_line_min_track);
 
 	int total_hx = 0;
 	std::unordered_map<std::shared_ptr<baseType>, size_t> map_hx;
@@ -56,18 +60,19 @@ void updaterHelper::getFeatureJacobianFull(std::shared_ptr<state> state_ptr, upd
 	Eigen::Vector3d p_FinG = feature.position_global;
 	Eigen::Vector3d p_FinG_fej = feature.position_global_fej;
 
-	int c = 0;
 	int jacobsize = 3;
+	int total_rows = 2 * total_meas;
 
-	res = Eigen::VectorXd::Zero(2 * total_meas);
-	H_f = Eigen::MatrixXd::Zero(2 * total_meas, jacobsize);
-	H_x = Eigen::MatrixXd::Zero(2 * total_meas, total_hx);
+	res = Eigen::VectorXd::Zero(total_rows);
+	H_f = Eigen::MatrixXd::Zero(total_rows, jacobsize);
+	H_x = Eigen::MatrixXd::Zero(total_rows, total_hx);
 
 	Eigen::MatrixXd dpfg_dlambda;
 	std::vector<Eigen::MatrixXd> dpfg_dx;
 	std::vector<std::shared_ptr<baseType>> dpfg_dx_order;
 	updaterHelper::getFeatureJacobianRepresentation(state_ptr, feature, dpfg_dlambda, dpfg_dx, dpfg_dx_order);
 
+	int row = 0;
 	for (auto const &pair : feature.timestamps)
 	{
 		std::shared_ptr<vec> distortion = state_ptr->cam_intrinsics.at(pair.first);
@@ -92,7 +97,8 @@ void updaterHelper::getFeatureJacobianFull(std::shared_ptr<state> state_ptr, upd
 
 			Eigen::Vector2d uv_m;
 			uv_m << (double)feature.uvs[pair.first].at(m)(0), (double)feature.uvs[pair.first].at(m)(1);
-			res.block(2 * c, 0, 2, 1) = uv_m - uv_dist;
+			Eigen::Vector2d r_uv = uv_m - uv_dist;
+			res.block(row, 0, 2, 1) = r_uv;
 
 			if (state_ptr->options.do_fej)
 			{
@@ -118,41 +124,154 @@ void updaterHelper::getFeatureJacobianFull(std::shared_ptr<state> state_ptr, upd
 			Eigen::MatrixXd dz_dpfc = dz_dzn * dzn_dpfc;
 			Eigen::MatrixXd dz_dpfg = dz_dpfc * dpfc_dpfg;
 
-			H_f.block(2 * c, 0, 2, H_f.cols()).noalias() = dz_dpfg * dpfg_dlambda;
-			H_x.block(2 * c, map_hx[clone_Ii], 2, clone_Ii->getSize()).noalias() = dz_dpfc * dpfc_dclone;
+			Eigen::MatrixXd Hf_point = dz_dpfg * dpfg_dlambda;
+			Eigen::MatrixXd Hx_point = dz_dpfc * dpfc_dclone;
 
+			std::vector<Eigen::MatrixXd> Hx_point_extra;
 			for (size_t i = 0; i < dpfg_dx_order.size(); i++)
 			{
-				H_x.block(2 * c, map_hx[dpfg_dx_order.at(i)], 2, dpfg_dx_order.at(i)->getSize()).noalias() += dz_dpfg * dpfg_dx.at(i);
+				Hx_point_extra.push_back(dz_dpfg * dpfg_dx.at(i));
 			}
 
+			Eigen::MatrixXd dpfc_dcalib;
 			if (state_ptr->options.do_calib_camera_pose)
 			{
-				Eigen::MatrixXd dpfc_dcalib = Eigen::MatrixXd::Zero(3, 6);
+				dpfc_dcalib = Eigen::MatrixXd::Zero(3, 6);
 				dpfc_dcalib.block(0, 0, 3, 3) = quatType::skewSymmetric(p_FinCi - p_IinC);
 				dpfc_dcalib.block(0, 3, 3, 3) = Eigen::Matrix<double, 3, 3>::Identity();
-
-				H_x.block(2 * c, map_hx[calibration], 2, calibration->getSize()).noalias() += dz_dpfc * dpfc_dcalib;
 			}
 
+			Eigen::MatrixXd Hx_dist;
 			if (state_ptr->options.do_calib_camera_intrinsics)
 			{
-				H_x.block(2 * c, map_hx[distortion], 2, distortion->getSize()) = dz_dzeta;
+				Hx_dist = dz_dzeta;
+			}
+
+			int block_rows = 2;
+			bool has_line = false;
+			double w_line = 1.0;
+			double w_point = 1.0;
+			Eigen::RowVector2d nT;
+			Eigen::RowVector2d tT;
+
+			if (use_lines)
+			{
+				auto it_dir = feature.line_directions.find(pair.first);
+				auto it_w = feature.line_weights.find(pair.first);
+
+				if (it_dir != feature.line_directions.end() && it_w != feature.line_weights.end() &&
+					it_dir->second.size() > m && it_w->second.size() > m)
+				{
+					Eigen::Vector2d line_dir = it_dir->second.at(m).cast<double>();
+					double norm = line_dir.norm();
+
+					if (it_w->second.at(m) > 0.0f && norm > 1e-6)
+					{
+						line_dir /= norm;
+						nT << -line_dir(1), line_dir(0);
+						tT << line_dir(0), line_dir(1);
+						w_line = sqrt((double)it_w->second.at(m));
+						has_line = true;
+					}
+				}
+
+				if (has_line && setting_line_point_gate > 0.0f)
+				{
+					double point_res = r_uv.norm();
+					if (point_res > setting_line_point_gate)
+						has_line = false;
+				}
+
+				if (has_line && setting_line_rot_deg > 0.0f && feature.anchor_clone_timestamp >= 0)
+				{
+					auto it_anchor = state_ptr->clones_imu.find(feature.anchor_clone_timestamp);
+					if (it_anchor != state_ptr->clones_imu.end())
+					{
+						Eigen::Matrix3d R_rel = clone_Ii->getRot() * it_anchor->second->getRot().transpose();
+						double cos_theta = 0.5 * (R_rel.trace() - 1.0);
+						cos_theta = std::min(1.0, std::max(-1.0, cos_theta));
+						double angle_deg = std::acos(cos_theta) * 180.0 / 3.14159265358979323846;
+
+						if (angle_deg > setting_line_rot_deg)
+						{
+							double line_scale = std::min(1.0, w_line);
+							double rot_scale = 1.0 - (1.0 - setting_line_rot_point_weight) * line_scale;
+							w_point *= rot_scale;
+						}
+					}
+				}
+			}
+
+			if (has_line)
+			{
+				res(row, 0) = w_point * (tT * r_uv)(0, 0);
+				res(row + 1, 0) = w_line * (nT * r_uv)(0, 0);
+
+				Eigen::MatrixXd t_dz_dpfc = tT * dz_dpfc;
+				Eigen::MatrixXd n_dz_dpfc = nT * dz_dpfc;
+				Eigen::MatrixXd t_dz_dpfg = tT * dz_dpfg;
+				Eigen::MatrixXd n_dz_dpfg = nT * dz_dpfg;
+
+				H_f.block(row, 0, 1, H_f.cols()).noalias() = w_point * t_dz_dpfg * dpfg_dlambda;
+				H_f.block(row + 1, 0, 1, H_f.cols()).noalias() = w_line * n_dz_dpfg * dpfg_dlambda;
+				H_x.block(row, map_hx[clone_Ii], 1, clone_Ii->getSize()).noalias() = w_point * t_dz_dpfc * dpfc_dclone;
+				H_x.block(row + 1, map_hx[clone_Ii], 1, clone_Ii->getSize()).noalias() = w_line * n_dz_dpfc * dpfc_dclone;
+
+				for (size_t i = 0; i < dpfg_dx_order.size(); i++)
+				{
+					H_x.block(row, map_hx[dpfg_dx_order.at(i)], 1, dpfg_dx_order.at(i)->getSize()).noalias() += 
+						w_point * t_dz_dpfg * dpfg_dx.at(i);
+					H_x.block(row + 1, map_hx[dpfg_dx_order.at(i)], 1, dpfg_dx_order.at(i)->getSize()).noalias() += 
+						w_line * n_dz_dpfg * dpfg_dx.at(i);
+				}
+
+				if (state_ptr->options.do_calib_camera_pose)
+				{
+					H_x.block(row, map_hx[calibration], 1, calibration->getSize()).noalias() += w_point * t_dz_dpfc * dpfc_dcalib;
+					H_x.block(row + 1, map_hx[calibration], 1, calibration->getSize()).noalias() += w_line * n_dz_dpfc * dpfc_dcalib;
+				}
+
+				if (state_ptr->options.do_calib_camera_intrinsics)
+				{
+					H_x.block(row, map_hx[distortion], 1, distortion->getSize()) = w_point * tT * Hx_dist;
+					H_x.block(row + 1, map_hx[distortion], 1, distortion->getSize()) = w_line * nT * Hx_dist;
+				}
+			}
+			else
+			{
+				H_f.block(row, 0, 2, H_f.cols()).noalias() = Hf_point;
+				H_x.block(row, map_hx[clone_Ii], 2, clone_Ii->getSize()).noalias() = Hx_point;
+
+				for (size_t i = 0; i < dpfg_dx_order.size(); i++)
+				{
+					H_x.block(row, map_hx[dpfg_dx_order.at(i)], 2, dpfg_dx_order.at(i)->getSize()).noalias() += Hx_point_extra.at(i);
+				}
+
+				if (state_ptr->options.do_calib_camera_pose)
+				{
+					H_x.block(row, map_hx[calibration], 2, calibration->getSize()).noalias() += dz_dpfc * dpfc_dcalib;
+				}
+
+				if (state_ptr->options.do_calib_camera_intrinsics)
+				{
+					H_x.block(row, map_hx[distortion], 2, distortion->getSize()) = Hx_dist;
+				}
 			}
 
 			if (state_ptr->options.use_huber)
 			{
-				double loss = res.block(2 * c, 0, 2, 1).norm();
+				Eigen::VectorXd res_block = res.block(row, 0, block_rows, 1);
+				double loss = res_block.norm();
 				double hw = loss < setting_huber_th ? 1 : setting_huber_th / loss;
 
 				if (hw < 1) hw = sqrt(hw);
 
-				res.block(2 * c, 0, 2, 1) *= hw;
-				H_x.block(2 * c, 0, 2, H_x.cols()) *= hw;
-				H_f.block(2 * c, 0, 2, H_f.cols()) *= hw;
+				res.block(row, 0, block_rows, 1) *= hw;
+				H_x.block(row, 0, block_rows, H_x.cols()) *= hw;
+				H_f.block(row, 0, block_rows, H_f.cols()) *= hw;
 			}
 
-			c++;
+			row += block_rows;
 		}
 	}
 }

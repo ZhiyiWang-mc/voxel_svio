@@ -244,5 +244,39 @@ public:
 
     bool use_keyframe = true;
 
+    bool use_point_lines = true;
+
+    int line_patch_halfsize = 6;
+
+    double line_grad_threshold = 10.0;
+
+    int line_min_support = 10;
+
+    double line_min_anisotropy = 0.40;
+
+    double line_weight_scale = 0.8;
+
+    double line_weight_max = 1.0;
+
+    int line_min_track = 4;
+
+    double line_point_gate = 2.5;
+
+    double line_min_weight = 0.25;
+
+    int line_voxel_radius = 1;
+
+    int line_voxel_min_points = 8;
+
+    double line_voxel_min_anisotropy = 0.6;
+
+    double line_voxel_max_angle_deg = 20.0;
+
+    double line_voxel_max_dist = 0.3;
+
+    double line_rot_deg = 35.0;
+
+    double line_rot_point_weight = 0.5;
+
     void recordParameters();
 };

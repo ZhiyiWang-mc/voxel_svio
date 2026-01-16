@@ -22,6 +22,28 @@ float setting_huber_th = 1;
 
 float setting_min_parallax = 10;
 
+bool setting_line_enable = true;
+
+int setting_line_min_track = 4;
+
+float setting_line_point_gate = 2.5f;
+
+float setting_line_min_weight = 0.25f;
+
+int setting_line_voxel_radius = 1;
+
+int setting_line_voxel_min_points = 8;
+
+float setting_line_voxel_min_anisotropy = 0.6f;
+
+float setting_line_voxel_max_angle_deg = 20.0f;
+
+float setting_line_voxel_max_dist = 0.3f;
+
+float setting_line_rot_deg = 35.0f;
+
+float setting_line_rot_point_weight = 0.5f;
+
 gammaPixel::gammaPixel()
 {
     for (int i = 0; i < 256; i++)

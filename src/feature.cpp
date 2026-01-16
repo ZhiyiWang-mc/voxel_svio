@@ -1,5 +1,104 @@
 #include "feature.h"
 #include "state.h"
+#include <Eigen/Eigenvalues>
+#include <algorithm>
+#include <cmath>
+
+namespace
+{
+bool computeAnchorLineDirection(const lineAnchorOptions &options, const std::shared_ptr<frame> &fh, size_t cam_id, int u, int v,
+    Eigen::Vector2f &dir_out, float &weight_out)
+{
+    dir_out.setZero();
+    weight_out = 0.0f;
+
+    if (!options.enable || fh == nullptr)
+        return false;
+
+    if (u < 1 || v < 1 || u >= wG[0] - 1 || v >= hG[0] - 1)
+        return false;
+
+    const Eigen::Vector3f* grad_img = (cam_id == 0) ? fh->dI_left : fh->dI_right;
+    if (grad_img == nullptr)
+        return false;
+
+    int half = options.patch_halfsize;
+    int x0 = std::max(1, u - half);
+    int x1 = std::min(wG[0] - 2, u + half);
+    int y0 = std::max(1, v - half);
+    int y1 = std::min(hG[0] - 2, v + half);
+
+    Eigen::Matrix2f J = Eigen::Matrix2f::Zero();
+    float grad_sum = 0.0f;
+    int valid = 0;
+
+    for (int yy = y0; yy <= y1; yy++)
+    {
+        for (int xx = x0; xx <= x1; xx++)
+        {
+            int idx = xx + yy * wG[0];
+            float gx = grad_img[idx][1];
+            float gy = grad_img[idx][2];
+
+            if (!std::isfinite(gx) || !std::isfinite(gy))
+                continue;
+
+            float gnorm = std::sqrt(gx * gx + gy * gy);
+
+            if (gnorm < options.grad_threshold)
+                continue;
+
+            grad_sum += gnorm;
+            valid++;
+
+            J(0, 0) += gx * gx;
+            J(0, 1) += gx * gy;
+            J(1, 1) += gy * gy;
+        }
+    }
+
+    J(1, 0) = J(0, 1);
+
+    if (valid < options.min_support || grad_sum <= 1e-6f)
+        return false;
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix2f> solver(J);
+
+    if (solver.info() != Eigen::Success)
+        return false;
+
+    Eigen::Vector2f evals = solver.eigenvalues().cast<float>();
+    Eigen::Matrix2f vecs = solver.eigenvectors().cast<float>();
+
+    Eigen::Index max_idx;
+    evals.maxCoeff(&max_idx);
+
+    float lambda_max = evals(max_idx);
+    float lambda_min = evals(1 - max_idx);
+    float anisotropy = (lambda_max - lambda_min) / (lambda_max + lambda_min + 1e-6f);
+
+    if (anisotropy < options.min_anisotropy)
+        return false;
+
+    Eigen::Vector2f grad_dir = vecs.col(max_idx);
+    Eigen::Vector2f line_dir(-grad_dir(1), grad_dir(0));
+
+    float norm = line_dir.norm();
+    if (norm < 1e-6f)
+        return false;
+
+    line_dir /= norm;
+
+    float weight = anisotropy * options.weight_scale;
+    if (weight > options.max_weight)
+        weight = options.max_weight;
+
+    dir_out = line_dir;
+    weight_out = weight;
+
+    return true;
+}
+} // namespace
 
 void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 {
@@ -7,12 +106,18 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		if (line_directions[pair.first].size() < timestamps[pair.first].size())
+			line_directions[pair.first].resize(timestamps[pair.first].size(), Eigen::Vector2f::Zero());
+		if (line_weights[pair.first].size() < timestamps[pair.first].size())
+			line_weights[pair.first].resize(timestamps[pair.first].size(), 0.0f);
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
+		auto it6 = line_directions[pair.first].begin();
+		auto it7 = line_weights[pair.first].begin();
 
 		while (it1 != timestamps[pair.first].end())
 		{
@@ -31,6 +136,8 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 
 				it4 = frames[pair.first].erase(it4);
 				it5 = color[pair.first].erase(it5);
+				it6 = line_directions[pair.first].erase(it6);
+				it7 = line_weights[pair.first].erase(it7);
 			}
 			else
 			{
@@ -39,6 +146,8 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 				it3++;
 				it4++;
 				it5++;
+				it6++;
+				it7++;
 			}
 		}
 	}
@@ -50,12 +159,18 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		if (line_directions[pair.first].size() < timestamps[pair.first].size())
+			line_directions[pair.first].resize(timestamps[pair.first].size(), Eigen::Vector2f::Zero());
+		if (line_weights[pair.first].size() < timestamps[pair.first].size())
+			line_weights[pair.first].resize(timestamps[pair.first].size(), 0.0f);
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
+		auto it6 = line_directions[pair.first].begin();
+		auto it7 = line_weights[pair.first].begin();
 
 		while (it1 != timestamps[pair.first].end())
 		{
@@ -74,6 +189,8 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 
 				it4 = frames[pair.first].erase(it4);
 				it5 = color[pair.first].erase(it5);
+				it6 = line_directions[pair.first].erase(it6);
+				it7 = line_weights[pair.first].erase(it7);
 				// 2024.10.31 yzk
 			}
 			else
@@ -83,6 +200,8 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 				it3++;
 				it4++;
 				it5++;
+				it6++;
+				it7++;
 			}
 		}
 	}
@@ -94,12 +213,18 @@ void feature::cleanOlderMeasurements(double timestamp)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		if (line_directions[pair.first].size() < timestamps[pair.first].size())
+			line_directions[pair.first].resize(timestamps[pair.first].size(), Eigen::Vector2f::Zero());
+		if (line_weights[pair.first].size() < timestamps[pair.first].size())
+			line_weights[pair.first].resize(timestamps[pair.first].size(), 0.0f);
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
+		auto it6 = line_directions[pair.first].begin();
+		auto it7 = line_weights[pair.first].begin();
 
 		while (it1 != timestamps[pair.first].end())
 		{
@@ -118,6 +243,8 @@ void feature::cleanOlderMeasurements(double timestamp)
 
 				it4 = frames[pair.first].erase(it4);
 				it5 = color[pair.first].erase(it5);
+				it6 = line_directions[pair.first].erase(it6);
+				it7 = line_weights[pair.first].erase(it7);
 			}
 			else
 			{
@@ -126,12 +253,14 @@ void feature::cleanOlderMeasurements(double timestamp)
 				it3++;
 				it4++;
 				it5++;
+				it6++;
+				it7++;
 			}
 		}
 	}
 }
 
-featureDatabase::featureDatabase()
+featureDatabase::featureDatabase(const lineAnchorOptions &line_options_) : line_options(line_options_)
 {
 	last_track_num = 0;
 }
@@ -172,8 +301,14 @@ void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double
 
 		if (u > 1.1 && u < wG[0] - 3 && v > 1.1 && v < hG[0] - 3)
 		{
+			Eigen::Vector2f line_dir = Eigen::Vector2f::Zero();
+			float line_weight = 0.0f;
+			computeAnchorLineDirection(line_options, fh, cam_id, (int)std::round(u), (int)std::round(v), line_dir, line_weight);
+
 			feat->uvs[cam_id].push_back(Eigen::Vector2f(u, v));
 			feat->uvs_norm[cam_id].push_back(Eigen::Vector2f(u_n, v_n));
+			feat->line_directions[cam_id].push_back(line_dir);
+			feat->line_weights[cam_id].push_back(line_weight);
 			feat->timestamps[cam_id].push_back(timestamp);
 			feat->frames[cam_id].push_back(fh);
 
@@ -194,10 +329,17 @@ void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double
 
 	if (u > 1.1 && u < wG[0] - 3 && v > 1.1 && v < hG[0] - 3)
 	{
+		Eigen::Vector2f line_dir = Eigen::Vector2f::Zero();
+		float line_weight = 0.0f;
+		computeAnchorLineDirection(line_options, fh, cam_id, (int)std::round(u), (int)std::round(v), line_dir, line_weight);
+
 		std::shared_ptr<feature> feat = std::make_shared<feature>();
 		feat->feature_id = id;
+		feat->to_delete = false;
 		feat->uvs[cam_id].push_back(Eigen::Vector2f(u, v));
 		feat->uvs_norm[cam_id].push_back(Eigen::Vector2f(u_n, v_n));
+		feat->line_directions[cam_id].push_back(line_dir);
+		feat->line_weights[cam_id].push_back(line_weight);
 		feat->timestamps[cam_id].push_back(timestamp);
 		feat->frames[cam_id].push_back(fh);
 

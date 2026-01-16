@@ -289,6 +289,26 @@ void odometryOptions::recordParameters()
 
 	foutC << std::fixed << "track_frequency: " << track_frequency << std::endl;
 
+	str_temp = use_point_lines ? "true" : "false";
+	foutC << "use_point_lines: " << str_temp << std::endl;
+
+	foutC << "line_patch_halfsize: " << line_patch_halfsize << std::endl;
+	foutC << std::fixed << "line_grad_threshold: " << line_grad_threshold << std::endl;
+	foutC << "line_min_support: " << line_min_support << std::endl;
+	foutC << std::fixed << "line_min_anisotropy: " << line_min_anisotropy << std::endl;
+	foutC << std::fixed << "line_weight_scale: " << line_weight_scale << std::endl;
+	foutC << std::fixed << "line_weight_max: " << line_weight_max << std::endl;
+	foutC << "line_min_track: " << line_min_track << std::endl;
+	foutC << std::fixed << "line_point_gate: " << line_point_gate << std::endl;
+	foutC << std::fixed << "line_min_weight: " << line_min_weight << std::endl;
+	foutC << "line_voxel_radius: " << line_voxel_radius << std::endl;
+	foutC << "line_voxel_min_points: " << line_voxel_min_points << std::endl;
+	foutC << std::fixed << "line_voxel_min_anisotropy: " << line_voxel_min_anisotropy << std::endl;
+	foutC << std::fixed << "line_voxel_max_angle_deg: " << line_voxel_max_angle_deg << std::endl;
+	foutC << std::fixed << "line_voxel_max_dist: " << line_voxel_max_dist << std::endl;
+	foutC << std::fixed << "line_rot_deg: " << line_rot_deg << std::endl;
+	foutC << std::fixed << "line_rot_point_weight: " << line_rot_point_weight << std::endl;
+
 	featinit_options.recordParameters();
 
 	foutC.close();

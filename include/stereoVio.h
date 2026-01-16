@@ -69,6 +69,8 @@ private:
 
     bool tryToInitialize(cameraData &image_measurements);
 
+    void drawVoxelLinesOnStereoImage(cv::Mat &stereo_image, double timestamp);
+
     std::queue<cameraData> camera_buffer;
 
     std::queue<imuData> imu_buffer;
