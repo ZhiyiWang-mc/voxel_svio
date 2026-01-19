@@ -921,8 +921,11 @@ void updaterMsckf::update(std::shared_ptr<state> state_ptr, std::vector<std::sha
 	}
 	rT4 = boost::posix_time::microsec_clock::local_time();
 
-	Eigen::MatrixXd R_big = (options.use_heteroscedastic ? Eigen::MatrixXd::Identity(res_big.rows(), res_big.rows())
-		: options.sigma_pix_sq * Eigen::MatrixXd::Identity(res_big.rows(), res_big.rows()));
+	Eigen::MatrixXd R_big = Eigen::MatrixXd::Identity(res_big.rows(), res_big.rows());
+	if (!options.use_heteroscedastic)
+	{
+		R_big *= options.sigma_pix_sq;
+	}
 
 	stateHelper::ekfUpdate(state_ptr, Hx_order_big, Hx_big, res_big, R_big);
 	rT5 = boost::posix_time::microsec_clock::local_time();
