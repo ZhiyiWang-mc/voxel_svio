@@ -3,6 +3,73 @@
 #include "stateHelper.h"
 #include "mapManagement.h"
 
+namespace {
+
+std::vector<double> buildMeasurementSigmaSq(const updaterHelper::updaterHelperFeature &feat, double base_sigma)
+{
+	std::vector<double> sigma_sq;
+	size_t total_meas = 0;
+	for (const auto &pair : feat.timestamps)
+	{
+		total_meas += pair.second.size();
+	}
+	sigma_sq.reserve(total_meas);
+
+	for (const auto &pair : feat.timestamps)
+	{
+		auto it_scale = feat.sigma_scale.find(pair.first);
+		for (size_t m = 0; m < pair.second.size(); m++)
+		{
+			double scale = 1.0;
+			if (it_scale != feat.sigma_scale.end() && m < it_scale->second.size())
+				scale = (double)it_scale->second.at(m);
+			if (scale < 1e-3)
+				scale = 1e-3;
+			double sigma = base_sigma * scale;
+			sigma_sq.push_back(sigma * sigma);
+		}
+	}
+
+	return sigma_sq;
+}
+
+void applyMeasurementWhitening(Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x, Eigen::VectorXd &res, const std::vector<double> &sigma_sq)
+{
+	if (sigma_sq.empty())
+		return;
+	if (res.rows() != static_cast<int>(sigma_sq.size() * 2))
+		return;
+
+	for (size_t i = 0; i < sigma_sq.size(); i++)
+	{
+		double sigma_sq_safe = sigma_sq.at(i) > 1e-12 ? sigma_sq.at(i) : 1e-12;
+		double inv_sigma = 1.0 / std::sqrt(sigma_sq_safe);
+		int row = static_cast<int>(2 * i);
+		res.block(row, 0, 2, 1) *= inv_sigma;
+		H_x.block(row, 0, 2, H_x.cols()) *= inv_sigma;
+		H_f.block(row, 0, 2, H_f.cols()) *= inv_sigma;
+	}
+}
+
+void applyMeasurementWhitening(Eigen::MatrixXd &H_x, Eigen::VectorXd &res, const std::vector<double> &sigma_sq)
+{
+	if (sigma_sq.empty())
+		return;
+	if (res.rows() != static_cast<int>(sigma_sq.size() * 2))
+		return;
+
+	for (size_t i = 0; i < sigma_sq.size(); i++)
+	{
+		double sigma_sq_safe = sigma_sq.at(i) > 1e-12 ? sigma_sq.at(i) : 1e-12;
+		double inv_sigma = 1.0 / std::sqrt(sigma_sq_safe);
+		int row = static_cast<int>(2 * i);
+		res.block(row, 0, 2, 1) *= inv_sigma;
+		H_x.block(row, 0, 2, H_x.cols()) *= inv_sigma;
+	}
+}
+
+}  // namespace
+
 propagator::propagator(noiseManager noises_, double gravity_mag_) : noises(noises_), cache_imu_valid(false)
 {
 	noises.sigma_w_2 = std::pow(noises.sigma_w, 2);
@@ -759,6 +826,7 @@ void updaterMsckf::update(std::shared_ptr<state> state_ptr, std::vector<std::sha
 		feat.timestamps = (*it2)->timestamps;
 		feat.frames = (*it2)->frames;
 		feat.color = (*it2)->color;
+		feat.sigma_scale = (*it2)->sigma_scale;
 		feat.position_global = (*it2)->position_global;
 		feat.position_global_fej = (*it2)->position_global;
 
@@ -768,11 +836,16 @@ void updaterMsckf::update(std::shared_ptr<state> state_ptr, std::vector<std::sha
 		std::vector<std::shared_ptr<baseType>> Hx_order;
 
 		updaterHelper::getFeatureJacobianFull(state_ptr, feat, H_f, H_x, res, Hx_order);
+		if (options.use_heteroscedastic)
+		{
+			std::vector<double> sigma_sq = buildMeasurementSigmaSq(feat, options.sigma_pix);
+			applyMeasurementWhitening(H_f, H_x, res, sigma_sq);
+		}
 		updaterHelper::nullspaceProjectInplace(H_f, H_x, res);
 
 		Eigen::MatrixXd P_marg = stateHelper::getMarginalCovariance(state_ptr, Hx_order);
 		Eigen::MatrixXd S = H_x * P_marg * H_x.transpose();
-		S.diagonal() += options.sigma_pix_sq * Eigen::VectorXd::Ones(S.rows());
+		S.diagonal() += (options.use_heteroscedastic ? 1.0 : options.sigma_pix_sq) * Eigen::VectorXd::Ones(S.rows());
 		double chi2 = res.dot(S.llt().solve(res));
 
 		double chi2_check;
@@ -848,7 +921,8 @@ void updaterMsckf::update(std::shared_ptr<state> state_ptr, std::vector<std::sha
 	}
 	rT4 = boost::posix_time::microsec_clock::local_time();
 
-	Eigen::MatrixXd R_big = options.sigma_pix_sq * Eigen::MatrixXd::Identity(res_big.rows(), res_big.rows());
+	Eigen::MatrixXd R_big = (options.use_heteroscedastic ? Eigen::MatrixXd::Identity(res_big.rows(), res_big.rows())
+		: options.sigma_pix_sq * Eigen::MatrixXd::Identity(res_big.rows(), res_big.rows()));
 
 	stateHelper::ekfUpdate(state_ptr, Hx_order_big, Hx_big, res_big, R_big);
 	rT5 = boost::posix_time::microsec_clock::local_time();
@@ -966,6 +1040,7 @@ void updaterSlam::delayedInit(std::shared_ptr<state> state_ptr, voxelHashMap &vo
 
 		feat.frames = (*it2)->frames;
 		feat.color = (*it2)->color;
+		feat.sigma_scale = (*it2)->sigma_scale;
 		assert(feat.color[0].size() == feat.uvs[0].size());
 		assert(feat.color[1].size() == feat.uvs[1].size());
 		assert(feat.color[(*it2)->anchor_cam_id].back() >= 0);
@@ -1135,10 +1210,16 @@ void updaterSlam::update(std::shared_ptr<state> state_ptr, voxelHashMap &voxel_m
 		std::vector<std::shared_ptr<baseType>> Hxf_order = Hx_order;
 		Hxf_order.push_back(map_point);
 
+		if (options_slam.use_heteroscedastic)
+		{
+			std::vector<double> sigma_sq = buildMeasurementSigmaSq(feat, options_slam.sigma_pix);
+			applyMeasurementWhitening(H_xf, res, sigma_sq);
+		}
+
 		Eigen::MatrixXd P_marg = stateHelper::getMarginalCovariance(state_ptr, Hxf_order);
 		Eigen::MatrixXd S = H_xf * P_marg * H_xf.transpose();
 		double sigma_pix_sq = options_slam.sigma_pix_sq;
-		S.diagonal() += sigma_pix_sq * Eigen::VectorXd::Ones(S.rows());
+		S.diagonal() += (options_slam.use_heteroscedastic ? 1.0 : sigma_pix_sq) * Eigen::VectorXd::Ones(S.rows());
 		double chi2 = res.dot(S.llt().solve(res));
 
 		double chi2_check;
@@ -1178,7 +1259,10 @@ void updaterSlam::update(std::shared_ptr<state> state_ptr, voxelHashMap &voxel_m
 			count_hx += var->getSize();
 		}
 
-		R_big.block(count_meas, count_meas, res.rows(), res.rows()) *= sigma_pix_sq;
+		if (!options_slam.use_heteroscedastic)
+		{
+			R_big.block(count_meas, count_meas, res.rows(), res.rows()) *= sigma_pix_sq;
+		}
 
 		res_big.block(count_meas, 0, res.rows(), 1) = res;
 		count_meas += res.rows();

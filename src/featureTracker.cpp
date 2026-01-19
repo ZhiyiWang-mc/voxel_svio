@@ -3,11 +3,16 @@
 #include "feature.h"
 #include "featureHelper.h"
 #include "state.h"
+#include <cmath>
 
 trackKLT::trackKLT(std::unordered_map<size_t, std::shared_ptr<cameraBase>> camera_calib_, int num_features_, 
-  HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_) 
+  HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_,
+  bool use_heteroscedastic_, float hetero_error_scale_, float hetero_fb_weight_, float hetero_epi_weight_,
+  float hetero_min_scale_, float hetero_max_scale_)
   : camera_calib(camera_calib_), database(new featureDatabase()), num_features(num_features_), histogram_method(histogram_method_), 
-  threshold(fast_threshold_), patch_size_x(patch_size_x_), patch_size_y(patch_size_y_), min_px_dist(min_px_dist_)
+  threshold(fast_threshold_), patch_size_x(patch_size_x_), patch_size_y(patch_size_y_), min_px_dist(min_px_dist_),
+  use_heteroscedastic(use_heteroscedastic_), hetero_error_scale(hetero_error_scale_), hetero_fb_weight(hetero_fb_weight_),
+  hetero_epi_weight(hetero_epi_weight_), hetero_min_scale(hetero_min_scale_), hetero_max_scale(hetero_max_scale_)
 {
   current_id = 1;
 
@@ -129,6 +134,7 @@ void trackKLT::feedStereo(const cameraData &image_measurements, std::shared_ptr<
   rT3 = boost::posix_time::microsec_clock::local_time();
 
   std::vector<uchar> mask_ll, mask_rr;
+  std::vector<float> noise_ll, noise_rr;
   std::vector<cv::KeyPoint> pts_left_new = pts_left_old;
   std::vector<cv::KeyPoint> pts_right_new = pts_right_old;
 
@@ -138,7 +144,7 @@ void trackKLT::feedStereo(const cameraData &image_measurements, std::shared_ptr<
                     performMatching(img_pyramid_last[is_left ? cam_id_left : cam_id_right], is_left ? img_pyr_left : img_pyr_right,
                                     is_left ? pts_left_old : pts_right_old, is_left ? pts_left_new : pts_right_new,
                                     is_left ? cam_id_left : cam_id_right, is_left ? cam_id_left : cam_id_right,
-                                    is_left ? mask_ll : mask_rr);
+                                    is_left ? mask_ll : mask_rr, is_left ? noise_ll : noise_rr);
                   }
                 }));
   rT4 = boost::posix_time::microsec_clock::local_time();
@@ -165,6 +171,12 @@ void trackKLT::feedStereo(const cameraData &image_measurements, std::shared_ptr<
   
   std::vector<cv::KeyPoint> good_left, good_right;
   std::vector<size_t> good_ids_left, good_ids_right;
+  std::vector<float> good_noise_left, good_noise_right;
+
+  auto noise_at = [](const std::vector<float> &noise, size_t index) -> float {
+    if (index < noise.size()) return noise.at(index);
+    return 1.0f;
+  };
 
   for (size_t i = 0; i < pts_left_new.size(); i++)
   {
@@ -194,11 +206,14 @@ void trackKLT::feedStereo(const cameraData &image_measurements, std::shared_ptr<
       good_right.push_back(pts_right_new.at(index_right));
       good_ids_left.push_back(ids_left_old.at(i));
       good_ids_right.push_back(ids_right_old.at(index_right));
+      good_noise_left.push_back(noise_at(noise_ll, i));
+      good_noise_right.push_back(noise_at(noise_rr, index_right));
     }
     else if (mask_ll[i])
     {
       good_left.push_back(pts_left_new.at(i));
       good_ids_left.push_back(ids_left_old.at(i));
+      good_noise_left.push_back(noise_at(noise_ll, i));
     }
   }
 
@@ -214,18 +229,21 @@ void trackKLT::feedStereo(const cameraData &image_measurements, std::shared_ptr<
     {
       good_right.push_back(pts_right_new.at(i));
       good_ids_right.push_back(ids_right_old.at(i));
+      good_noise_right.push_back(noise_at(noise_rr, i));
     }
   }
 
   for (size_t i = 0; i < good_left.size(); i++)
   {
     cv::Point2f npt_l = camera_calib.at(cam_id_left)->undistortCV(good_left.at(i).pt);
-    database->updateFeature(fh, good_ids_left.at(i), image_measurements.timestamp, cam_id_left, good_left.at(i).pt.x, good_left.at(i).pt.y, npt_l.x, npt_l.y);
+    float sigma_scale = (i < good_noise_left.size()) ? good_noise_left.at(i) : 1.0f;
+    database->updateFeature(fh, good_ids_left.at(i), image_measurements.timestamp, cam_id_left, good_left.at(i).pt.x, good_left.at(i).pt.y, npt_l.x, npt_l.y, sigma_scale);
   }
   for (size_t i = 0; i < good_right.size(); i++)
   {
     cv::Point2f npt_r = camera_calib.at(cam_id_right)->undistortCV(good_right.at(i).pt);
-    database->updateFeature(fh, good_ids_right.at(i), image_measurements.timestamp, cam_id_right, good_right.at(i).pt.x, good_right.at(i).pt.y, npt_r.x, npt_r.y);
+    float sigma_scale = (i < good_noise_right.size()) ? good_noise_right.at(i) : 1.0f;
+    database->updateFeature(fh, good_ids_right.at(i), image_measurements.timestamp, cam_id_right, good_right.at(i).pt.x, good_right.at(i).pt.y, npt_r.x, npt_r.y, sigma_scale);
   }
 
   {
@@ -518,12 +536,16 @@ void trackKLT::performDetectionStereo(std::shared_ptr<frame> fh, const std::vect
 }
 
 void trackKLT::performMatching(const std::vector<cv::Mat> &img_0_pyr, const std::vector<cv::Mat> &img_1_pyr, 
-  std::vector<cv::KeyPoint> &kpts_0, std::vector<cv::KeyPoint> &kpts_1, size_t id_0, size_t id_1, std::vector<uchar> &mask_out)
+  std::vector<cv::KeyPoint> &kpts_0, std::vector<cv::KeyPoint> &kpts_1, size_t id_0, size_t id_1, std::vector<uchar> &mask_out, 
+  std::vector<float> &noise_scale_out)
 {
   assert(kpts_0.size() == kpts_1.size());
 
   if (kpts_0.empty() || kpts_1.empty())
     return;
+
+  mask_out.clear();
+  noise_scale_out.clear();
 
   std::vector<cv::Point2f> pts_0, pts_1;
   for (size_t i = 0; i < kpts_0.size(); i++)
@@ -536,6 +558,8 @@ void trackKLT::performMatching(const std::vector<cv::Mat> &img_0_pyr, const std:
   {
     for (size_t i = 0; i < pts_0.size(); i++)
       mask_out.push_back((uchar)0);
+    for (size_t i = 0; i < pts_0.size(); i++)
+      noise_scale_out.push_back(1.0f);
 
     return;
   }
@@ -544,6 +568,29 @@ void trackKLT::performMatching(const std::vector<cv::Mat> &img_0_pyr, const std:
   std::vector<float> error;
   cv::TermCriteria term_crit = cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01);
   cv::calcOpticalFlowPyrLK(img_0_pyr, img_1_pyr, pts_0, pts_1, mask_klt, error, win_size, pyr_levels, term_crit, cv::OPTFLOW_USE_INITIAL_FLOW);
+
+  std::vector<float> fb_error;
+  if (use_heteroscedastic && hetero_fb_weight > 0.0f)
+  {
+    std::vector<uchar> mask_back;
+    std::vector<float> error_back;
+    std::vector<cv::Point2f> pts_back = pts_0;
+    cv::calcOpticalFlowPyrLK(img_1_pyr, img_0_pyr, pts_1, pts_back, mask_back, error_back, win_size, pyr_levels, term_crit, cv::OPTFLOW_USE_INITIAL_FLOW);
+    fb_error.resize(pts_0.size(), 0.0f);
+
+    for (size_t i = 0; i < pts_0.size(); i++)
+    {
+      if (i < mask_klt.size() && mask_klt[i] && i < mask_back.size() && mask_back[i])
+      {
+        cv::Point2f diff = pts_back.at(i) - pts_0.at(i);
+        fb_error.at(i) = std::sqrt(diff.x * diff.x + diff.y * diff.y);
+      }
+      else
+      {
+        fb_error.at(i) = 1e3f;
+      }
+    }
+  }
 
   std::vector<cv::Point2f> pts_0_n, pts_1_n;
   for (size_t i = 0; i < pts_0.size(); i++)
@@ -556,12 +603,46 @@ void trackKLT::performMatching(const std::vector<cv::Mat> &img_0_pyr, const std:
   double max_focallength_img_0 = std::max(camera_calib.at(id_0)->getK()(0, 0), camera_calib.at(id_0)->getK()(1, 1));
   double max_focallength_img_1 = std::max(camera_calib.at(id_1)->getK()(0, 0), camera_calib.at(id_1)->getK()(1, 1));
   double max_focallength = std::max(max_focallength_img_0, max_focallength_img_1);
-  cv::findFundamentalMat(pts_0_n, pts_1_n, cv::FM_RANSAC, 2.0 / max_focallength, 0.999, mask_rsc);
+  cv::Mat F_mat = cv::findFundamentalMat(pts_0_n, pts_1_n, cv::FM_RANSAC, 2.0 / max_focallength, 0.999, mask_rsc);
+  Eigen::Matrix3d F = Eigen::Matrix3d::Zero();
+  bool have_F = (F_mat.rows == 3 && F_mat.cols == 3);
+  if (have_F)
+  {
+    F << F_mat.at<double>(0, 0), F_mat.at<double>(0, 1), F_mat.at<double>(0, 2),
+         F_mat.at<double>(1, 0), F_mat.at<double>(1, 1), F_mat.at<double>(1, 2),
+         F_mat.at<double>(2, 0), F_mat.at<double>(2, 1), F_mat.at<double>(2, 2);
+  }
+  std::vector<float> epi_error;
+  if (use_heteroscedastic && hetero_epi_weight > 0.0f && have_F)
+  {
+    epi_error.resize(pts_0.size(), 0.0f);
+    for (size_t i = 0; i < pts_0_n.size(); i++)
+    {
+      Eigen::Vector3d x1(pts_0_n.at(i).x, pts_0_n.at(i).y, 1.0);
+      Eigen::Vector3d x2(pts_1_n.at(i).x, pts_1_n.at(i).y, 1.0);
+      Eigen::Vector3d Fx1 = F * x1;
+      Eigen::Vector3d Ftx2 = F.transpose() * x2;
+      double denom = Fx1(0) * Fx1(0) + Fx1(1) * Fx1(1) + Ftx2(0) * Ftx2(0) + Ftx2(1) * Ftx2(1);
+      if (denom > 1e-12)
+      {
+        double num = x2.transpose() * F * x1;
+        epi_error.at(i) = static_cast<float>((num * num) / denom);
+      }
+      else
+      {
+        epi_error.at(i) = 0.0f;
+      }
+    }
+  }
 
   for (size_t i = 0; i < mask_klt.size(); i++)
   {
     auto mask = (uchar)((i < mask_klt.size() && mask_klt[i] && i < mask_rsc.size() && mask_rsc[i]) ? 1 : 0);
     mask_out.push_back(mask);
+    float klt_error = (i < error.size()) ? error.at(i) : 0.0f;
+    float fb_err = (i < fb_error.size()) ? fb_error.at(i) : 0.0f;
+    float ep_err = (i < epi_error.size()) ? epi_error.at(i) : 0.0f;
+    noise_scale_out.push_back(computeNoiseScale(klt_error, fb_err, ep_err));
   }
 
   for (size_t i = 0; i < pts_0.size(); i++)
@@ -569,6 +650,27 @@ void trackKLT::performMatching(const std::vector<cv::Mat> &img_0_pyr, const std:
     kpts_0.at(i).pt = pts_0.at(i);
     kpts_1.at(i).pt = pts_1.at(i);
   }
+}
+
+float trackKLT::computeNoiseScale(float klt_error, float fb_error, float epi_error) const
+{
+  if (!use_heteroscedastic)
+    return 1.0f;
+
+  float combined = 0.0f;
+  if (std::isfinite(klt_error))
+    combined += klt_error;
+  if (hetero_fb_weight > 0.0f && std::isfinite(fb_error))
+    combined += hetero_fb_weight * fb_error;
+  if (hetero_epi_weight > 0.0f && std::isfinite(epi_error))
+    combined += hetero_epi_weight * epi_error;
+
+  float scale = 1.0f + hetero_error_scale * combined;
+  if (scale < hetero_min_scale)
+    scale = hetero_min_scale;
+  if (scale > hetero_max_scale)
+    scale = hetero_max_scale;
+  return scale;
 }
 
 void trackKLT::displayActive(cv::Mat &img_out, int r1, int g1, int b1, int r2, int g2, int b2, std::string overlay)

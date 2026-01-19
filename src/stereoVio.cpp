@@ -1,4 +1,5 @@
 #include "stereoVio.h"
+#include <cmath>
 
 voxelStereoVio::voxelStereoVio() : it(nh)
 {
@@ -335,6 +336,16 @@ void voxelStereoVio::readParameters()
     }
     nh.param<double>("odometry_parameter/track_frequency", para_double, 20.0); odometry_options.track_frequency = para_double;
 
+    nh.param<bool>("odometry_parameter/use_heteroscedastic", para_bool, false); odometry_options.use_heteroscedastic = para_bool;
+    nh.param<double>("odometry_parameter/hetero_error_scale", para_double, 0.0); odometry_options.hetero_error_scale = para_double;
+    nh.param<double>("odometry_parameter/hetero_fb_weight", para_double, 0.0); odometry_options.hetero_fb_weight = para_double;
+    nh.param<double>("odometry_parameter/hetero_epi_weight", para_double, 0.0); odometry_options.hetero_epi_weight = para_double;
+    nh.param<double>("odometry_parameter/hetero_min_scale", para_double, 1.0); odometry_options.hetero_min_scale = para_double;
+    nh.param<double>("odometry_parameter/hetero_max_scale", para_double, 5.0); odometry_options.hetero_max_scale = para_double;
+
+    odometry_options.msckf_options.use_heteroscedastic = odometry_options.use_heteroscedastic;
+    odometry_options.slam_options.use_heteroscedastic = odometry_options.use_heteroscedastic;
+
     nh.param<bool>("odometry_parameter/use_huber", para_bool, true); odometry_options.state_options.use_huber = para_bool;
     nh.param<bool>("odometry_parameter/use_keyframe", para_bool, true); odometry_options.use_keyframe = para_bool;
 
@@ -358,6 +369,27 @@ void voxelStereoVio::readParameters()
     nh.param<double>("voxel_parameter/min_distance_points", para_double, 0.03); odometry_options.min_distance_points = odometry_options.state_options.min_distance_points = para_double;
     nh.param<int>("voxel_parameter/nb_voxels_visited", para_int, 1); odometry_options.nb_voxels_visited = para_int;
     nh.param<bool>("voxel_parameter/use_all_points", para_bool, false); odometry_options.use_all_points = para_bool;
+    nh.param<bool>("voxel_parameter/use_adaptive_voxel", para_bool, false); odometry_options.use_adaptive_voxel = para_bool;
+    nh.param<int>("voxel_parameter/adaptive_min_tracks", para_int, 80); odometry_options.adaptive_min_tracks = para_int;
+    nh.param<int>("voxel_parameter/adaptive_max_extra_voxels", para_int, 2); odometry_options.adaptive_max_extra_voxels = para_int;
+    nh.param<bool>("voxel_parameter/use_frustum_retrieval", para_bool, false); odometry_options.use_frustum_retrieval = para_bool;
+    nh.param<int>("voxel_parameter/frustum_grid_cols", para_int, 20); odometry_options.frustum_grid_cols = para_int;
+    nh.param<int>("voxel_parameter/frustum_grid_rows", para_int, 15); odometry_options.frustum_grid_rows = para_int;
+    nh.param<double>("voxel_parameter/frustum_depth_min", para_double, 1.0); odometry_options.frustum_depth_min = para_double;
+    nh.param<double>("voxel_parameter/frustum_depth_max", para_double, 30.0); odometry_options.frustum_depth_max = para_double;
+    nh.param<double>("voxel_parameter/frustum_depth_step", para_double, 1.0); odometry_options.frustum_depth_step = para_double;
+    nh.param<int>("voxel_parameter/frustum_max_voxels", para_int, 500); odometry_options.frustum_max_voxels = para_int;
+    nh.param<int>("voxel_parameter/frustum_trigger_tracks", para_int, 80); odometry_options.frustum_trigger_tracks = para_int;
+
+    nh.param<bool>("constraint_parameter/use_info_scheduling", para_bool, false); odometry_options.use_info_scheduling = para_bool;
+    nh.param<int>("constraint_parameter/info_sched_budget", para_int, 100); odometry_options.info_sched_budget = para_int;
+    nh.param<int>("constraint_parameter/info_sched_max_candidates", para_int, 300); odometry_options.info_sched_max_candidates = para_int;
+    nh.param<int>("constraint_parameter/info_sched_points_per_voxel", para_int, 3); odometry_options.info_sched_points_per_voxel = para_int;
+    nh.param<int>("constraint_parameter/info_sched_bearing_bins", para_int, 12); odometry_options.info_sched_bearing_bins = para_int;
+    nh.param<int>("constraint_parameter/info_sched_depth_bins", para_int, 5); odometry_options.info_sched_depth_bins = para_int;
+    nh.param<double>("constraint_parameter/info_sched_lambda", para_double, 1.0); odometry_options.info_sched_lambda = para_double;
+    nh.param<double>("constraint_parameter/info_sched_depth_min", para_double, 1.0); odometry_options.info_sched_depth_min = para_double;
+    nh.param<double>("constraint_parameter/info_sched_depth_max", para_double, 30.0); odometry_options.info_sched_depth_max = para_double;
 }
 
 void voxelStereoVio::allocateMemory()
@@ -394,7 +426,10 @@ void voxelStereoVio::allocateMemory()
     int init_max_features = std::floor((double)odometry_options.init_options.init_max_features / (double)2.0);
 
     featureTracker = std::shared_ptr<trackKLT>(new trackKLT(state_ptr->cam_intrinsics_cameras, init_max_features, odometry_options.histogram_method, 
-        odometry_options.fast_threshold, odometry_options.patch_size_x, odometry_options.patch_size_y, odometry_options.min_px_dist));
+        odometry_options.fast_threshold, odometry_options.patch_size_x, odometry_options.patch_size_y, odometry_options.min_px_dist,
+        odometry_options.use_heteroscedastic, static_cast<float>(odometry_options.hetero_error_scale), static_cast<float>(odometry_options.hetero_fb_weight),
+        static_cast<float>(odometry_options.hetero_epi_weight), static_cast<float>(odometry_options.hetero_min_scale),
+        static_cast<float>(odometry_options.hetero_max_scale)));
 
     propagator_ptr = std::make_shared<propagator>(odometry_options.imu_noises, odometry_options.gravity_mag);
 
@@ -847,48 +882,138 @@ void voxelStereoVio::getRecentVoxel(double timestamp, pcl::PointCloud<pcl::Point
     voxels_visit->clear();
     // display
 
+    std::unordered_set<voxel> visited;
+
+    int voxel_radius = odometry_options.nb_voxels_visited;
+    if (odometry_options.use_adaptive_voxel && odometry_options.adaptive_min_tracks > 0)
+    {
+        int tracks = static_cast<int>(active_tracks_pos_world.size());
+        if (tracks < odometry_options.adaptive_min_tracks)
+        {
+            double ratio = static_cast<double>(odometry_options.adaptive_min_tracks - tracks) / static_cast<double>(odometry_options.adaptive_min_tracks);
+            if (ratio > 1.0)
+                ratio = 1.0;
+            int extra = static_cast<int>(ratio * odometry_options.adaptive_max_extra_voxels + 0.5);
+            voxel_radius += extra;
+        }
+    }
+    if (voxel_radius < 0)
+        voxel_radius = 0;
+
+    auto add_voxel = [&](short kxx, short kyy, short kzz, float intensity) {
+        voxel key(kxx, kyy, kzz);
+        if (visited.find(key) != visited.end())
+            return;
+        voxelHashMap::iterator search = voxel_map.find(key);
+        if (search == voxel_map.end())
+            return;
+
+        auto &voxel_block = (search.value());
+        if (voxel_block.last_visit_time >= timestamp || voxel_block.NumPoints() == 0)
+            return;
+
+        Eigen::Matrix<short, 3, 1> voxel_temp;
+        voxel_temp[0] = kxx;
+        voxel_temp[1] = kyy;
+        voxel_temp[2] = kzz;
+
+        visited.insert(key);
+        recent_voxels.push_back(voxel_temp);
+        voxel_block.last_visit_time = timestamp;
+
+        pcl::PointXYZI point_temp;
+        point_temp.x = kxx >= 0 ? (kxx + 0.5) * odometry_options.voxel_size : (kxx - 0.5) * odometry_options.voxel_size;
+        point_temp.y = kyy >= 0 ? (kyy + 0.5) * odometry_options.voxel_size : (kyy - 0.5) * odometry_options.voxel_size;
+        point_temp.z = kzz >= 0 ? (kzz + 0.5) * odometry_options.voxel_size : (kzz - 0.5) * odometry_options.voxel_size;
+        point_temp.intensity = intensity;
+
+        voxels_visit->points.push_back(point_temp);
+    };
+
     for (const auto &point : active_tracks_pos_world)
     {
         short kx = static_cast<short>(point.second[0] / odometry_options.voxel_size);
         short ky = static_cast<short>(point.second[1] / odometry_options.voxel_size);
         short kz = static_cast<short>(point.second[2] / odometry_options.voxel_size);
 
-        for (short kxx = kx - odometry_options.nb_voxels_visited; kxx < kx + odometry_options.nb_voxels_visited + 1; kxx++)
+        for (short kxx = kx - voxel_radius; kxx < kx + voxel_radius + 1; kxx++)
         {
-            for (short kyy = ky - odometry_options.nb_voxels_visited; kyy < ky + odometry_options.nb_voxels_visited + 1; kyy++)
+            for (short kyy = ky - voxel_radius; kyy < ky + voxel_radius + 1; kyy++)
             {
-                for (short kzz = kz - odometry_options.nb_voxels_visited; kzz < kz + odometry_options.nb_voxels_visited + 1; kzz++)
+                for (short kzz = kz - voxel_radius; kzz < kz + voxel_radius + 1; kzz++)
                 {
-                    voxelHashMap::iterator search = voxel_map.find(voxel(kxx, kyy, kzz));
-
-                    if(search != voxel_map.end())
-                    {
-                        auto &voxel_block = (search.value());
-
-                        if (voxel_block.last_visit_time < timestamp && voxel_block.NumPoints() > 0)
-                        {
-                            Eigen::Matrix<short, 3, 1> voxel_temp;
-
-                            voxel_temp[0] = kxx;
-                            voxel_temp[1] = kyy;
-                            voxel_temp[2] = kzz;
-
-                            recent_voxels.push_back(voxel_temp);
-                            voxel_block.last_visit_time = timestamp;
-
-                            // display
-                            pcl::PointXYZI point_temp;
-    
-                            point_temp.x = kxx >= 0 ? (kxx + 0.5) * odometry_options.voxel_size : (kxx - 0.5) * odometry_options.voxel_size;
-                            point_temp.y = kyy >= 0 ? (kyy + 0.5) * odometry_options.voxel_size : (kyy - 0.5) * odometry_options.voxel_size;
-                            point_temp.z = kzz >= 0 ? (kzz + 0.5) * odometry_options.voxel_size : (kzz - 0.5) * odometry_options.voxel_size;
-                            point_temp.intensity = 1;
-
-                            voxels_visit->points.push_back(point_temp);
-                            // display
-                        }
-                    }
+                    add_voxel(kxx, kyy, kzz, 1.0f);
                 }
+            }
+        }
+    }
+
+    bool use_frustum = odometry_options.use_frustum_retrieval &&
+        static_cast<int>(active_tracks_pos_world.size()) < odometry_options.frustum_trigger_tracks;
+
+    if (use_frustum && !voxel_map.empty())
+    {
+        const size_t cam_id = 0;
+        auto cam_it = state_ptr->cam_intrinsics_cameras.find(cam_id);
+        if (cam_it != state_ptr->cam_intrinsics_cameras.end() && state_ptr->calib_cam_imu.find(cam_id) != state_ptr->calib_cam_imu.end())
+        {
+            std::shared_ptr<cameraBase> cam_ptr = cam_it->second;
+            Eigen::Matrix3d R_GtoI = state_ptr->imu_ptr->getRot();
+            Eigen::Vector3d p_IinG = state_ptr->imu_ptr->getPos();
+            Eigen::Matrix3d R_ItoC = state_ptr->calib_cam_imu.at(cam_id)->getRot();
+            Eigen::Vector3d p_IinC = state_ptr->calib_cam_imu.at(cam_id)->getPos();
+            Eigen::Matrix3d R_GtoC = R_ItoC * R_GtoI;
+            Eigen::Vector3d p_CinG = p_IinG - R_GtoC.transpose() * p_IinC;
+
+            int width = cam_ptr->w();
+            int height = cam_ptr->h();
+            int grid_cols = odometry_options.frustum_grid_cols > 0 ? odometry_options.frustum_grid_cols : 1;
+            int grid_rows = odometry_options.frustum_grid_rows > 0 ? odometry_options.frustum_grid_rows : 1;
+
+            double depth_min = odometry_options.frustum_depth_min;
+            double depth_max = odometry_options.frustum_depth_max;
+            double depth_step = odometry_options.frustum_depth_step;
+            if (depth_step <= 0.0)
+                depth_step = 1.0;
+            if (depth_min < 0.1)
+                depth_min = 0.1;
+            if (depth_max < depth_min + depth_step)
+                depth_max = depth_min + depth_step;
+
+            int max_voxels = odometry_options.frustum_max_voxels;
+            int added_voxels = 0;
+
+            for (int gy = 0; gy < grid_rows; gy++)
+            {
+                double v = (gy + 0.5) * static_cast<double>(height) / static_cast<double>(grid_rows);
+                for (int gx = 0; gx < grid_cols; gx++)
+                {
+                    double u = (gx + 0.5) * static_cast<double>(width) / static_cast<double>(grid_cols);
+                    cv::Point2f pixel(static_cast<float>(u), static_cast<float>(v));
+                    cv::Point2f undist = cam_ptr->undistortCV(pixel);
+
+                    Eigen::Vector3d bearing(undist.x, undist.y, 1.0);
+                    bearing.normalize();
+
+                    for (double depth = depth_min; depth <= depth_max; depth += depth_step)
+                    {
+                        Eigen::Vector3d p_C = bearing * depth;
+                        Eigen::Vector3d p_G = p_CinG + R_GtoC.transpose() * p_C;
+                        voxel vox = voxel::coordinates(p_G, odometry_options.voxel_size);
+                        size_t before = recent_voxels.size();
+                        add_voxel(vox.x, vox.y, vox.z, 2.0f);
+                        if (recent_voxels.size() > before)
+                            added_voxels++;
+                        if (max_voxels > 0 && added_voxels >= max_voxels)
+                            break;
+                    }
+
+                    if (max_voxels > 0 && added_voxels >= max_voxels)
+                        break;
+                }
+
+                if (max_voxels > 0 && added_voxels >= max_voxels)
+                    break;
             }
         }
     }
@@ -1009,24 +1134,300 @@ void voxelStereoVio::featureUpdate(cameraData &image_measurements)
         }
     }
 
-    for (int i = 0; i < recent_voxels.size(); i++)
+    std::vector<std::shared_ptr<feature>> features_slam_map;
+    if (odometry_options.use_info_scheduling)
     {
-        short kx = recent_voxels[i][0];
-        short ky = recent_voxels[i][1];
-        short kz = recent_voxels[i][2];
-
-        voxelHashMap::iterator search = voxel_map.find(voxel(kx, ky, kz));
-        auto &voxel_block = (search.value());
-
-        if (odometry_options.use_all_points)
+        struct CandidateInfo
         {
-            for (int j = 0; j < voxel_block.points.size(); j++)
+            size_t index;
+            double score;
+            int bearing_bin;
+            int depth_bin;
+        };
+
+        std::vector<std::shared_ptr<mapPoint>> candidate_points;
+        std::vector<std::shared_ptr<feature>> candidate_features;
+        std::unordered_set<size_t> candidate_ids;
+
+        int max_candidates = odometry_options.info_sched_max_candidates;
+        int points_per_voxel = odometry_options.info_sched_points_per_voxel;
+        bool use_all_points = odometry_options.use_all_points || points_per_voxel <= 0;
+
+        for (int i = 0; i < recent_voxels.size(); i++)
+        {
+            short kx = recent_voxels[i][0];
+            short ky = recent_voxels[i][1];
+            short kz = recent_voxels[i][2];
+
+            voxelHashMap::iterator search = voxel_map.find(voxel(kx, ky, kz));
+            if (search == voxel_map.end())
+                continue;
+
+            auto &voxel_block = (search.value());
+            int limit = static_cast<int>(voxel_block.points.size());
+            if (!use_all_points && limit > points_per_voxel)
+                limit = points_per_voxel;
+
+            for (int j = 0; j < limit; j++)
             {
                 std::shared_ptr<mapPoint> map_point_ptr = voxel_block.points[j];
+                if (!candidate_ids.insert(map_point_ptr->feature_id).second)
+                    continue;
 
                 std::shared_ptr<feature> feature = featureTracker->getFeatureDatabase()->getFeature(map_point_ptr->feature_id);
                 if (feature != nullptr)
-                    features_slam.push_back(feature);
+                {
+                    candidate_points.push_back(map_point_ptr);
+                    candidate_features.push_back(feature);
+                }
+
+                assert(map_point_ptr->unique_camera_id != -1);
+                bool current_host_cam = std::find(image_measurements.camera_ids.begin(), image_measurements.camera_ids.end(), map_point_ptr->unique_camera_id) != image_measurements.camera_ids.end();
+
+                if (feature == nullptr && current_host_cam)
+                    map_point_ptr->should_marg = true;
+
+                if (map_point_ptr->update_fail_count > 1)
+                    map_point_ptr->should_marg = true;
+
+                if (max_candidates > 0 && candidate_features.size() >= static_cast<size_t>(max_candidates))
+                    break;
+            }
+
+            if (max_candidates > 0 && candidate_features.size() >= static_cast<size_t>(max_candidates))
+                break;
+        }
+
+        std::vector<CandidateInfo> candidates;
+        candidates.reserve(candidate_features.size());
+
+        bool have_cam = (state_ptr->calib_cam_imu.find(0) != state_ptr->calib_cam_imu.end());
+        Eigen::Matrix3d R_GtoC = Eigen::Matrix3d::Identity();
+        Eigen::Vector3d p_CinG = Eigen::Vector3d::Zero();
+        if (have_cam)
+        {
+            Eigen::Matrix3d R_GtoI = state_ptr->imu_ptr->getRot();
+            Eigen::Vector3d p_IinG = state_ptr->imu_ptr->getPos();
+            Eigen::Matrix3d R_ItoC = state_ptr->calib_cam_imu.at(0)->getRot();
+            Eigen::Vector3d p_IinC = state_ptr->calib_cam_imu.at(0)->getPos();
+            R_GtoC = R_ItoC * R_GtoI;
+            p_CinG = p_IinG - R_GtoC.transpose() * p_IinC;
+        }
+
+        int bearing_bins = odometry_options.info_sched_bearing_bins > 0 ? odometry_options.info_sched_bearing_bins : 1;
+        int depth_bins = odometry_options.info_sched_depth_bins > 0 ? odometry_options.info_sched_depth_bins : 1;
+        double depth_min = odometry_options.info_sched_depth_min;
+        double depth_max = odometry_options.info_sched_depth_max;
+        if (depth_max <= depth_min)
+            depth_max = depth_min + 1.0;
+        const double kTwoPi = 6.283185307179586;
+
+        auto build_sigma_sq = [&](const updaterHelper::updaterHelperFeature &feat, double base_sigma) {
+            std::vector<double> sigma_sq;
+            size_t total_meas = 0;
+            for (const auto &pair : feat.timestamps)
+                total_meas += pair.second.size();
+            sigma_sq.reserve(total_meas);
+
+            for (const auto &pair : feat.timestamps)
+            {
+                auto it_scale = feat.sigma_scale.find(pair.first);
+                for (size_t m = 0; m < pair.second.size(); m++)
+                {
+                    double scale = 1.0;
+                    if (it_scale != feat.sigma_scale.end() && m < it_scale->second.size())
+                        scale = (double)it_scale->second.at(m);
+                    if (scale < 1e-3)
+                        scale = 1e-3;
+                    double sigma = base_sigma * scale;
+                    sigma_sq.push_back(sigma * sigma);
+                }
+            }
+            return sigma_sq;
+        };
+
+        auto apply_whitening = [&](Eigen::MatrixXd &H_xf, Eigen::VectorXd &res, const std::vector<double> &sigma_sq) {
+            if (sigma_sq.empty())
+                return;
+            if (res.rows() != static_cast<int>(sigma_sq.size() * 2))
+                return;
+            for (size_t i = 0; i < sigma_sq.size(); i++)
+            {
+                double sigma_sq_safe = sigma_sq.at(i) > 1e-12 ? sigma_sq.at(i) : 1e-12;
+                double inv_sigma = 1.0 / std::sqrt(sigma_sq_safe);
+                int row = static_cast<int>(2 * i);
+                res.block(row, 0, 2, 1) *= inv_sigma;
+                H_xf.block(row, 0, 2, H_xf.cols()) *= inv_sigma;
+            }
+        };
+
+        for (size_t i = 0; i < candidate_features.size(); i++)
+        {
+            std::shared_ptr<mapPoint> map_point_ptr = candidate_points.at(i);
+            std::shared_ptr<feature> feature = candidate_features.at(i);
+
+            updaterHelper::updaterHelperFeature feat;
+            feat.feature_id = feature->feature_id;
+            feat.uvs = feature->uvs;
+            feat.uvs_norm = feature->uvs_norm;
+            feat.timestamps = feature->timestamps;
+            feat.frames = feature->frames;
+            feat.color = feature->color;
+            feat.sigma_scale = feature->sigma_scale;
+            feat.position_global = map_point_ptr->getPointXYZ(false);
+            feat.position_global_fej = map_point_ptr->getPointXYZ(true);
+
+            Eigen::MatrixXd H_f;
+            Eigen::MatrixXd H_x;
+            Eigen::VectorXd res;
+            std::vector<std::shared_ptr<baseType>> Hx_order;
+
+            updaterHelper::getFeatureJacobianFull(state_ptr, feat, H_f, H_x, res, Hx_order);
+            if (H_x.rows() < 2)
+                continue;
+
+            Eigen::MatrixXd H_xf = H_x;
+            H_xf.conservativeResize(H_x.rows(), H_x.cols() + H_f.cols());
+            H_xf.block(0, H_x.cols(), H_x.rows(), H_f.cols()) = H_f;
+
+            std::vector<std::shared_ptr<baseType>> Hxf_order = Hx_order;
+            Hxf_order.push_back(map_point_ptr);
+
+            if (odometry_options.slam_options.use_heteroscedastic)
+            {
+                std::vector<double> sigma_sq = build_sigma_sq(feat, odometry_options.slam_options.sigma_pix);
+                apply_whitening(H_xf, res, sigma_sq);
+            }
+
+            Eigen::MatrixXd P_marg = stateHelper::getMarginalCovariance(state_ptr, Hxf_order);
+            Eigen::MatrixXd HP = H_xf * P_marg;
+            double info_score = (HP.cwiseProduct(H_xf)).sum();
+
+            int bearing_bin = 0;
+            int depth_bin = 0;
+            if (have_cam)
+            {
+                Eigen::Vector3d p_FinG = map_point_ptr->getPointXYZ(false);
+                Eigen::Vector3d p_FinC = R_GtoC * (p_FinG - p_CinG);
+                double depth = p_FinC(2);
+                if (depth <= 0.1)
+                    continue;
+                double azimuth = atan2(p_FinC(1), p_FinC(0));
+                double angle = azimuth + 3.141592653589793;
+                if (angle < 0.0)
+                    angle += kTwoPi;
+                bearing_bin = static_cast<int>(angle / kTwoPi * static_cast<double>(bearing_bins));
+                if (bearing_bin < 0)
+                    bearing_bin = 0;
+                if (bearing_bin >= bearing_bins)
+                    bearing_bin = bearing_bins - 1;
+
+                double t = (depth - depth_min) / (depth_max - depth_min);
+                if (t < 0.0)
+                    t = 0.0;
+                if (t > 0.999999)
+                    t = 0.999999;
+                depth_bin = static_cast<int>(t * static_cast<double>(depth_bins));
+                if (depth_bin < 0)
+                    depth_bin = 0;
+                if (depth_bin >= depth_bins)
+                    depth_bin = depth_bins - 1;
+            }
+
+            CandidateInfo candidate;
+            candidate.index = i;
+            candidate.score = info_score;
+            candidate.bearing_bin = bearing_bin;
+            candidate.depth_bin = depth_bin;
+            candidates.push_back(candidate);
+        }
+
+        int budget = odometry_options.info_sched_budget;
+        if (budget <= 0)
+            budget = state_ptr->options.max_slam_in_update;
+        if (budget > state_ptr->options.max_slam_in_update)
+            budget = state_ptr->options.max_slam_in_update;
+        if (budget > static_cast<int>(candidates.size()))
+            budget = static_cast<int>(candidates.size());
+
+        std::vector<int> bearing_cov(bearing_bins, 0);
+        std::vector<int> depth_cov(depth_bins, 0);
+        std::vector<char> selected(candidates.size(), 0);
+
+        for (int k = 0; k < budget; k++)
+        {
+            double best_score = -1.0;
+            int best_idx = -1;
+
+            for (size_t i = 0; i < candidates.size(); i++)
+            {
+                if (selected.at(i))
+                    continue;
+
+                const CandidateInfo &cand = candidates.at(i);
+                double coverage_gain = 0.0;
+                if (bearing_cov.at(cand.bearing_bin) == 0)
+                    coverage_gain += 1.0;
+                if (depth_cov.at(cand.depth_bin) == 0)
+                    coverage_gain += 1.0;
+
+                double total_score = cand.score + odometry_options.info_sched_lambda * coverage_gain;
+                if (total_score > best_score)
+                {
+                    best_score = total_score;
+                    best_idx = static_cast<int>(i);
+                }
+            }
+
+            if (best_idx < 0)
+                break;
+
+            selected.at(best_idx) = 1;
+            const CandidateInfo &best = candidates.at(best_idx);
+            bearing_cov.at(best.bearing_bin) += 1;
+            depth_cov.at(best.depth_bin) += 1;
+            features_slam_map.push_back(candidate_features.at(best.index));
+        }
+    }
+    else
+    {
+        for (int i = 0; i < recent_voxels.size(); i++)
+        {
+            short kx = recent_voxels[i][0];
+            short ky = recent_voxels[i][1];
+            short kz = recent_voxels[i][2];
+
+            voxelHashMap::iterator search = voxel_map.find(voxel(kx, ky, kz));
+            auto &voxel_block = (search.value());
+
+            if (odometry_options.use_all_points)
+            {
+                for (int j = 0; j < voxel_block.points.size(); j++)
+                {
+                    std::shared_ptr<mapPoint> map_point_ptr = voxel_block.points[j];
+
+                    std::shared_ptr<feature> feature = featureTracker->getFeatureDatabase()->getFeature(map_point_ptr->feature_id);
+                    if (feature != nullptr)
+                        features_slam_map.push_back(feature);
+
+                    assert(map_point_ptr->unique_camera_id != -1);
+
+                    bool current_host_cam = std::find(image_measurements.camera_ids.begin(), image_measurements.camera_ids.end(), map_point_ptr->unique_camera_id) != image_measurements.camera_ids.end();
+
+                    if (feature == nullptr && current_host_cam)
+                        map_point_ptr->should_marg = true;
+
+                    if (map_point_ptr->update_fail_count > 1)
+                        map_point_ptr->should_marg = true;
+                }
+            }
+            else
+            {
+                std::shared_ptr<mapPoint> map_point_ptr = voxel_block.points.front();
+
+                std::shared_ptr<feature> feature = featureTracker->getFeatureDatabase()->getFeature(map_point_ptr->feature_id);
+                if (feature != nullptr)
+                    features_slam_map.push_back(feature);
 
                 assert(map_point_ptr->unique_camera_id != -1);
 
@@ -1039,25 +1440,9 @@ void voxelStereoVio::featureUpdate(cameraData &image_measurements)
                     map_point_ptr->should_marg = true;
             }
         }
-        else
-        {
-            std::shared_ptr<mapPoint> map_point_ptr = voxel_block.points.front();
-
-            std::shared_ptr<feature> feature = featureTracker->getFeatureDatabase()->getFeature(map_point_ptr->feature_id);
-            if (feature != nullptr)
-                features_slam.push_back(feature);
-
-            assert(map_point_ptr->unique_camera_id != -1);
-
-            bool current_host_cam = std::find(image_measurements.camera_ids.begin(), image_measurements.camera_ids.end(), map_point_ptr->unique_camera_id) != image_measurements.camera_ids.end();
-
-            if (feature == nullptr && current_host_cam)
-                map_point_ptr->should_marg = true;
-
-            if (map_point_ptr->update_fail_count > 1)
-                map_point_ptr->should_marg = true;
-        }
     }
+
+    features_slam.insert(features_slam.end(), features_slam_map.begin(), features_slam_map.end());
 
     // time test
     boost::posix_time::ptime rT_begin6 = boost::posix_time::microsec_clock::local_time();

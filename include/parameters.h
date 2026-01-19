@@ -173,6 +173,8 @@ public:
 
     double sigma_pix_sq = 1;
 
+    bool use_heteroscedastic = false;
+
     void recordParameters();
 };
 
@@ -230,6 +232,18 @@ public:
 
     double track_frequency = 20.0;
 
+    bool use_heteroscedastic = false;
+
+    double hetero_error_scale = 0.0;
+
+    double hetero_fb_weight = 0.0;
+
+    double hetero_epi_weight = 0.0;
+
+    double hetero_min_scale = 1.0;
+
+    double hetero_max_scale = 5.0;
+
     featureInitializerOptions featinit_options;
 
     double voxel_size = 0.5;
@@ -241,6 +255,46 @@ public:
     int nb_voxels_visited = 1;
 
     bool use_all_points = false;
+
+    bool use_adaptive_voxel = false;
+
+    int adaptive_min_tracks = 80;
+
+    int adaptive_max_extra_voxels = 2;
+
+    bool use_frustum_retrieval = false;
+
+    int frustum_grid_cols = 20;
+
+    int frustum_grid_rows = 15;
+
+    double frustum_depth_min = 1.0;
+
+    double frustum_depth_max = 30.0;
+
+    double frustum_depth_step = 1.0;
+
+    int frustum_max_voxels = 500;
+
+    int frustum_trigger_tracks = 80;
+
+    bool use_info_scheduling = false;
+
+    int info_sched_budget = 100;
+
+    int info_sched_max_candidates = 300;
+
+    int info_sched_points_per_voxel = 3;
+
+    int info_sched_bearing_bins = 12;
+
+    int info_sched_depth_bins = 5;
+
+    double info_sched_lambda = 1.0;
+
+    double info_sched_depth_min = 1.0;
+
+    double info_sched_depth_max = 30.0;
 
     bool use_keyframe = true;
 

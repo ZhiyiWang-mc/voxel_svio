@@ -99,6 +99,12 @@ odometry_parameter:
     min_px_dist: 10
     histogram_method: "histogram"
     track_frequency: 21.0
+    use_heteroscedastic: true
+    hetero_error_scale: 0.1
+    hetero_fb_weight: 0.5
+    hetero_epi_weight: 0.2
+    hetero_min_scale: 1.0
+    hetero_max_scale: 5.0
     
 feature_parameter:
     refine_features: true
@@ -120,3 +126,25 @@ voxel_parameter:
     max_num_points_in_voxel: 5
     min_distance_points: 0.0    # raw: 0.03
     nb_voxels_visited: 2
+    use_adaptive_voxel: true
+    adaptive_min_tracks: 80
+    adaptive_max_extra_voxels: 2
+    use_frustum_retrieval: true
+    frustum_grid_cols: 20
+    frustum_grid_rows: 15
+    frustum_depth_min: 1.0
+    frustum_depth_max: 30.0
+    frustum_depth_step: 1.0
+    frustum_max_voxels: 500
+    frustum_trigger_tracks: 80
+
+constraint_parameter:
+    use_info_scheduling: true
+    info_sched_budget: 100
+    info_sched_max_candidates: 300
+    info_sched_points_per_voxel: 3
+    info_sched_bearing_bins: 12
+    info_sched_depth_bins: 5
+    info_sched_lambda: 1.0
+    info_sched_depth_min: 1.0
+    info_sched_depth_max: 30.0

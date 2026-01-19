@@ -36,6 +36,8 @@ public:
 
 		std::unordered_map<size_t, std::vector<float>> color;
 
+		std::unordered_map<size_t, std::vector<float>> sigma_scale;
+
 		int anchor_cam_id = -1;
 
 		double anchor_clone_timestamp = -1;

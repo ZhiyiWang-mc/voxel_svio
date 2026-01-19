@@ -36,6 +36,8 @@ public:
 
   std::unordered_map<size_t, std::vector<float>> color;
 
+  std::unordered_map<size_t, std::vector<float>> sigma_scale;
+
   int start_frame_id;
 
   int start_cam_id;
@@ -65,7 +67,7 @@ public:
 
   std::shared_ptr<feature> getFeature(size_t id, bool remove = false);
 
-  void updateFeature(std::shared_ptr<frame> fh, size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n);
+  void updateFeature(std::shared_ptr<frame> fh, size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n, float sigma_scale);
 
   std::vector<std::shared_ptr<feature>> getOldFeatures(double timestamp, bool remove = false, bool skip_deleted = false);
 

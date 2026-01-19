@@ -28,7 +28,9 @@ class trackKLT
 public:
 
 	trackKLT(std::unordered_map<size_t, std::shared_ptr<cameraBase>> camera_calib_, int num_features_, 
-		HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_);
+		HistogramMethod histogram_method_, int fast_threshold_, int patch_size_x_, int patch_size_y_, int min_px_dist_,
+		bool use_heteroscedastic_, float hetero_error_scale_, float hetero_fb_weight_, float hetero_epi_weight_,
+		float hetero_min_scale_, float hetero_max_scale_);
 
 	void feedNewImage(const cameraData &image_measurements, std::shared_ptr<frame> fh);
 
@@ -49,7 +51,9 @@ private:
 		size_t cam_id_left, size_t cam_id_right, std::vector<cv::KeyPoint> &pts_0, std::vector<cv::KeyPoint> &pts_1, std::vector<size_t> &ids_0, std::vector<size_t> &ids_1);
 
 	void performMatching(const std::vector<cv::Mat> &img_0_pyr, const std::vector<cv::Mat> &img_1_pyr, std::vector<cv::KeyPoint> &pts_0, 
-		std::vector<cv::KeyPoint> &pts_1, size_t id_0, size_t id_1, std::vector<uchar> &mask_out);
+		std::vector<cv::KeyPoint> &pts_1, size_t id_0, size_t id_1, std::vector<uchar> &mask_out, std::vector<float> &noise_scale_out);
+
+	float computeNoiseScale(float klt_error, float fb_error, float epi_error) const;
 
 	std::unordered_map<size_t, std::shared_ptr<cameraBase>> camera_calib;
 
@@ -76,6 +80,13 @@ private:
 	int patch_size_y;
 
 	int min_px_dist;
+
+	bool use_heteroscedastic;
+	float hetero_error_scale;
+	float hetero_fb_weight;
+	float hetero_epi_weight;
+	float hetero_min_scale;
+	float hetero_max_scale;
 
 	int pyr_levels = 5;
 	cv::Size win_size = cv::Size(15, 15);

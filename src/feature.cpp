@@ -1,4 +1,5 @@
 #include "feature.h"
+#include <cmath>
 #include "state.h"
 
 void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
@@ -7,12 +8,14 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		assert(timestamps[pair.first].size() == sigma_scale[pair.first].size());
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
+		auto it6 = sigma_scale[pair.first].begin();
 
 		while (it1 != timestamps[pair.first].end())
 		{
@@ -31,6 +34,7 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 
 				it4 = frames[pair.first].erase(it4);
 				it5 = color[pair.first].erase(it5);
+				it6 = sigma_scale[pair.first].erase(it6);
 			}
 			else
 			{
@@ -39,6 +43,7 @@ void feature::cleanOldMeasurements(const std::vector<double> &valid_times)
 				it3++;
 				it4++;
 				it5++;
+				it6++;
 			}
 		}
 	}
@@ -50,12 +55,14 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		assert(timestamps[pair.first].size() == sigma_scale[pair.first].size());
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
+		auto it6 = sigma_scale[pair.first].begin();
 
 		while (it1 != timestamps[pair.first].end())
 		{
@@ -74,6 +81,7 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 
 				it4 = frames[pair.first].erase(it4);
 				it5 = color[pair.first].erase(it5);
+				it6 = sigma_scale[pair.first].erase(it6);
 				// 2024.10.31 yzk
 			}
 			else
@@ -83,6 +91,7 @@ void feature::cleanInvalidMeasurements(const std::vector<double> &invalid_times)
 				it3++;
 				it4++;
 				it5++;
+				it6++;
 			}
 		}
 	}
@@ -94,12 +103,14 @@ void feature::cleanOlderMeasurements(double timestamp)
 	{
 		assert(timestamps[pair.first].size() == uvs[pair.first].size());
 		assert(timestamps[pair.first].size() == uvs_norm[pair.first].size());
+		assert(timestamps[pair.first].size() == sigma_scale[pair.first].size());
 
 		auto it1 = timestamps[pair.first].begin();
 		auto it2 = uvs[pair.first].begin();
 		auto it3 = uvs_norm[pair.first].begin();
 		auto it4 = frames[pair.first].begin();
 		auto it5 = color[pair.first].begin();
+		auto it6 = sigma_scale[pair.first].begin();
 
 		while (it1 != timestamps[pair.first].end())
 		{
@@ -118,6 +129,7 @@ void feature::cleanOlderMeasurements(double timestamp)
 
 				it4 = frames[pair.first].erase(it4);
 				it5 = color[pair.first].erase(it5);
+				it6 = sigma_scale[pair.first].erase(it6);
 			}
 			else
 			{
@@ -126,6 +138,7 @@ void feature::cleanOlderMeasurements(double timestamp)
 				it3++;
 				it4++;
 				it5++;
+				it6++;
 			}
 		}
 	}
@@ -164,8 +177,11 @@ std::shared_ptr<feature> featureDatabase::getFeature(size_t id, bool remove)
 	}
 }
 
-void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n)
+void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n, float sigma_scale)
 {
+	float sigma_scale_safe = std::isfinite(sigma_scale) ? sigma_scale : 1.0f;
+	if (sigma_scale_safe <= 0.0f) sigma_scale_safe = 1.0f;
+
 	if (features_id_lookup.find(id) != features_id_lookup.end())
 	{
 		std::shared_ptr<feature> feat = features_id_lookup.at(id);
@@ -183,6 +199,7 @@ void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double
 			assert(color_temp >= 0);
 
 			feat->color[cam_id].push_back(color_temp);
+			feat->sigma_scale[cam_id].push_back(sigma_scale_safe);
 			feat->num_tracking = fh->frame_id - feat->start_frame_id;
 			fh->v_feat_ptr[cam_id][feat->feature_id] = feat;
 
@@ -207,6 +224,7 @@ void featureDatabase::updateFeature(std::shared_ptr<frame> fh, size_t id, double
 		assert(color_temp >= 0);
 
 		feat->color[cam_id].push_back(color_temp);
+		feat->sigma_scale[cam_id].push_back(sigma_scale_safe);
 		feat->start_frame_id = fh->frame_id;
 		feat->start_cam_id = cam_id;
 		feat->num_tracking = 0;
